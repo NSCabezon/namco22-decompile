@@ -3,9 +3,11 @@
  *
  * So a game can be set up by dropping its zip(s) beside it: on Windows there is no Python for tools/setup_roms.py. At startup,
  * if the ROM folder is incomplete, the game calls eng_romzip_autosetup() with ITS chip list (name and size): every chip is taken
- * by name and size, checked against the zip's own CRC, and written into the ROM folder. Only top-level zip entries are taken, unless a chip names its
- * zip path (`zname`): a MAME set also carries its other program sets under sub-folders. Such a chip is taken from that path first, then from the top
- * level, then under the same name in any folder (a split set, a zip made by hand). A chip can also name an `alt`: a different MAME version renamed it
+ * by name and size, checked against the zip's own CRC, and written into the ROM folder. A chip is taken from its expected path (the top
+ * level, or the `zname` path for a chip a MAME set keeps under a clone's sub-folder) first, then from the top level, then under the same name in
+ * any folder (a split set, a folder zipped whole, a zip made by hand) -- and, in a table that carries CRCs, by CRC32 + size whatever its name.
+ * Every copy of each zip is read (the AppImage's folder, the current folder, roms/, the program's folder) until the set is complete, then any
+ * other "<set>*.zip" / "namco*.zip" there (a clone's or a device's zip); a chip already unpacked is never replaced. ZIP64 archives are read. A chip can also name an `alt`: a different MAME version renamed it
  * (Tokyo Wars' program chips were `tw2ver-a.1`..`.4`, current MAME sets ship them as `tw2vera.1`..`.4`, same data) -- either spelling is taken and
  * always written to disk under the chip's own `name`, so nothing downstream needs to know a rename ever happened. A chip that is in the zip but
  * unusable (wrong size, damaged, an unsupported compression method) says so in the error. The same code as Rave Racer's src/rr_romzip.c, with the
