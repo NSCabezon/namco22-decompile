@@ -11,7 +11,8 @@
  *   Left/Right    change the value (on the tab strip: switch page)
  *   Enter/Space   select / toggle / step the value
  *   Tab, PgUp/PgDn, pad LB/RB   switch page from anywhere
- *   Esc (pad B / Start)         close
+ *   Esc                         exit the game (Esc opened the menu: Esc twice quits)
+ *   Backspace (pad B / Start)   close
  *
  * Every change goes through the host's setters (rr_host.c), which apply it and
  * save it to rr_controls.cfg at once.
@@ -35,6 +36,7 @@
 #define NK_SDL_GL2_IMPLEMENTATION
 #include "../../third_party/nuklear.h"          /* the tree's one copy, shared with Prop Cycle */
 #include "../../third_party/nuklear_sdl_gl2.h"  /* Prop Cycle's backend: the window is OpenGL */
+#include "../../engine/eng_nk_style.h"
 
 #include "rr_ui.h"
 #include "rr_game.h"
@@ -71,7 +73,7 @@ static bool kb_moved;                  /* keep the selected row in view after a 
 
 /* ---- the rows ------------------------------------------------------------- */
 enum { D_WIDE, D_DRAW, D_MODE, D_SIZE, D_RES, D_ASPECT, D_SCALING, D_HUD, D_FPS, D_N };
-enum { C_FREEPLAY, C_FFB, C_FFB_DIR, C_N };      /* the Controls page's rows before the bindings */
+enum { C_FREEPLAY, C_FFB, C_FFB_DIR, C_STICK, C_N };      /* the Controls page's rows before the bindings */
 enum { O_SERVER, O_NAME, O_HOST, O_FIND, O_CONNECT, O_STATUS, O_LOBBY0 };   /* then, not connected: one row per LAN game found; connected: the players, Ready, Start */
 static int online_rows(void) { return O_LOBBY0 + (rr_net_connected() ? rr_net_roster_count() + 2 : rr_net_found_count()); }
 static int online_self_ready(void)
@@ -149,6 +151,7 @@ static void row_text(int t, int r, char *label, size_t ln, char *value, size_t v
             else snprintf(value, vn, "OFF");
         }
         else if (r == C_FFB_DIR) { snprintf(label, ln, "FFB direction"); snprintf(value, vn, "%s", g_cfg_ffb_invert ? "reversed" : "normal"); }
+        else if (r == C_STICK) { snprintf(label, ln, "Stick steering"); snprintf(value, vn, "%s", g_stick_steer_name[g_cfg_stick_steer]); }   /* GitHub #42 */
         else {
             const int a = r - C_N;
             if (g_rr_game->act_label && g_rr_game->act_label[a]) snprintf(label, ln, "%s", g_rr_game->act_label[a]);   /* the game's own names */
@@ -270,6 +273,7 @@ static void row_change(int t, int r, int dir)
         if (r == C_FREEPLAY) rr_host_set_freeplay(!rr_hw_freeplay());
         else if (r == C_FFB) rr_host_set_ffb_strength(dir ? g_cfg_ffb_strength + 10 * dir : (g_cfg_ffb_strength + 10) % 110);   /* Enter cycles */
         else if (r == C_FFB_DIR) rr_host_set_ffb_invert(!g_cfg_ffb_invert);
+        else if (r == C_STICK) rr_host_set_stick_steer(dir ? g_cfg_stick_steer + dir : g_cfg_stick_steer + 1);   /* left/right step, Enter cycles */
         else if (dir == 0) { rebinding = r - C_N; rr_input_capture_begin(rebinding); }
         break;
     case T_RECORD: rr_host_toggle_record(); break;
@@ -318,6 +322,7 @@ bool rr_ui_init(SDL_Window *win)
     nk_sdl_font_stash_end();
     font->handle.height /= ui_scale;
     nk_style_set_font(ctx, &font->handle);
+    eng_nk_style_highlight(ctx);
     return true;
 }
 void rr_ui_shutdown(void) { if (ctx) nk_sdl_shutdown(); ctx = NULL; }
@@ -388,10 +393,11 @@ void rr_ui_input_begin(void) { if (ctx) nk_input_begin(ctx); }
 void rr_ui_input_end(void)   { if (ctx) nk_input_end(ctx); }
 
 /* one navigation step from the keyboard, a pad or a hat */
-enum { K_UP, K_DOWN, K_LEFT, K_RIGHT, K_OK, K_BACK, K_TABPREV, K_TABNEXT };
+enum { K_UP, K_DOWN, K_LEFT, K_RIGHT, K_OK, K_BACK, K_TABPREV, K_TABNEXT, K_EXIT };
 static void nav(int k)
 {
     const int n = nrows(tab);
+    if (k == K_EXIT) { if (newroom_open || dlg_open) k = K_BACK; else { quit_req = true; return; } }   /* Esc twice = exit (a dialog: Esc closes it) */
     if (dlg_open && k != K_BACK) return;             /* the Online play window is mouse/touch; Esc/B closes it */
     switch (k) {
     case K_UP:    row = row <= -1 ? n - 1 : row - 1; break;
@@ -453,7 +459,8 @@ bool rr_ui_event(SDL_Event *e)
         case SDL_SCANCODE_LEFT: k = K_LEFT; break;
         case SDL_SCANCODE_RIGHT: k = K_RIGHT; break;
         case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: case SDL_SCANCODE_SPACE: if (!rep) k = K_OK; break;
-        case SDL_SCANCODE_ESCAPE: case SDL_SCANCODE_BACKSPACE: if (!rep) k = K_BACK; break;
+        case SDL_SCANCODE_ESCAPE: if (!rep) k = K_EXIT; break;     /* Esc twice = exit; Backspace / pad B = back to the game */
+        case SDL_SCANCODE_BACKSPACE: if (!rep) k = K_BACK; break;
         case SDL_SCANCODE_TAB: if (!rep) k = (e->key.keysym.mod & KMOD_SHIFT) ? K_TABPREV : K_TABNEXT; break;
         case SDL_SCANCODE_PAGEUP: if (!rep) k = K_TABPREV; break;
         case SDL_SCANCODE_PAGEDOWN: if (!rep) k = K_TABNEXT; break;
@@ -775,7 +782,7 @@ void rr_ui_draw(bool *quit)
             if (nk_select_label(ctx, tab_name[t], NK_TEXT_CENTERED, t == tab) && t != tab) { tab = t; row = 0; }
         }
         nk_layout_row_push(ctx, (float)ww - x - 8 > 60 ? (float)ww - x - 8 : 60);
-        nk_label(ctx, row < 0 ? "<- Left/Right ->   Down: open   Esc: close" : "Arrows, Enter, Esc", NK_TEXT_RIGHT);
+        nk_label(ctx, row < 0 ? "<- Left/Right ->   Down: open   Backspace: resume   Esc: exit game" : "Arrows, Enter   Backspace: resume   Esc: exit game", NK_TEXT_RIGHT);
         nk_menubar_end(ctx);
     }
     nk_end(ctx);

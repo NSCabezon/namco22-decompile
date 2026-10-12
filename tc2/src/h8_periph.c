@@ -326,6 +326,15 @@ void h8p_irq_taken(h8p *p, int vec)
     const int base = p->chip == H8P_3002 ? 12 : 4, n = vec - base;
     if (n >= 0 && n < 8 && (p->iscr >> n & 1)) p->isr &= (uint8_t)~(1u << n);   /* edge-sensed: cleared by taking it */
 }
+/* THE ADTRG PIN (external A/D trigger; MAME h8_adc_device::adtrg_w): with ADCR.TRGE (bit 7) set, its FALLING edge starts a conversion unless one is
+ * running. System 23 wires it to the screen's vblank (MAME namcos23_state::vblank): Crisis Zone's sub-CPU waits for that conversion with
+ * interrupts masked (0x000C50); Time Crisis 2 never sets TRGE. Call with the peripherals synced to the edge's time. */
+void h8p_adtrg(h8p *p, int level)
+{
+    if (level == p->adtrg) return;
+    p->adtrg = level;
+    if (!level && (p->adcr & 0x80) && !(p->adcsr & 0x20)) { p->adcsr |= 0x20; p->adc_done = p->now + ((p->adcsr & 8) ? 134 : 266); }
+}
 void h8p_set_irq_pin(h8p *p, int n, int asserted)
 {
     const uint8_t b = (uint8_t)(1u << n), was = p->irq_pin & b;
@@ -531,7 +540,7 @@ void h8p_reset(h8p *p)
         memset(&p->sci[ch], 0, sizeof p->sci[ch]);
         p->sci[ch].brr = 0xFF; p->sci[ch].ssr = TDRE | TEND; p->sci[ch].ext_bit = ext;
     }
-    p->adcsr = p->adcr = 0; memset(p->addr, 0, sizeof p->addr);
+    p->adcsr = p->adcr = 0; memset(p->addr, 0, sizeof p->addr); p->adtrg = 1;
     p->wd_tcsr = p->wd_tcnt = 0;
     memset(p->dr, 0, sizeof p->dr); memset(p->ddr, 0, sizeof p->ddr); memset(p->pmask, 0, sizeof p->pmask);
     if (p->chip == H8P_3002) {                       /* MAME h83002: H8_PORT(port, default ddr, mask) */

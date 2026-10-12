@@ -14,6 +14,7 @@ where a MAME set has since renamed one (see [docs/ROM_CHECKSUMS.md](docs/ROM_CHE
 | **Rave Racer** | 1995 | Playable | **yes**, up to 8 ([how](#playing-online)) | `raverace.zip` + `namcoc74.zip` | yes | yes |
 | **Tokyo Wars** | 1996 | Playable | no | `tokyowar.zip` | yes | yes |
 | **Dirt Dash** | 1995 | Playable, all five stages | no | `dirtdash.zip` | yes | yes |
+| **Armadillo Racing** | 1997 | Playable; the mouse or a USB trackball is the trackball | no | `adillor.zip` | yes | yes |
 | **Time Crisis** | 1995 | Playable; mouse or light gun | no | `timecris.zip` | yes | yes |
 | **Ace Driver** | 1994 | Playable; force feedback, developer screens | no | `acedrive.zip` + `namcoc74.zip` | yes | yes |
 | **Cyber Commando** | 1994 | Playable; Japanese version | no | `cybrcomm.zip` + `namcoc74.zip` | yes | yes |
@@ -86,13 +87,12 @@ Each release on the [Releases page](https://github.com/spacestate1/namco22-decom
 | Package | For | How to install |
 |---|---|---|
 | `namco-2x-systems_VERSION_amd64.deb` | Ubuntu 22.04 or newer, Linux Mint 21 or newer, LMDE 6, Debian 12 or newer | `sudo apt install ./namco-2x-systems_*_amd64.deb` |
-| `namco-2x-systems-VERSION-1.fc40.x86_64.rpm` | Fedora 40 or newer | `sudo dnf install ./namco-2x-systems-*.x86_64.rpm` |
-| `PropCycle-x86_64.AppImage`, `RaveRacer-...`, `TokyoWars-...`, `DirtDash-...`, `TimeCrisis-...`, `AceDriver-...`, `CyberCommando-...`, `CyberSled-...`, `TimeCrisis2-...` | **The Steam Deck**, and any 64-bit Linux without installing anything | `chmod +x` the file and run it (on a Deck: Desktop Mode, right-click it > Add to Steam) |
+| `PropCycle-x86_64.AppImage`, `RaveRacer-...`, `TokyoWars-...`, `DirtDash-...`, `ArmadilloRacing-...`, `TimeCrisis-...`, `AceDriver-...`, `CyberCommando-...`, `CyberSled-...`, `TimeCrisis2-...` | **The Steam Deck**, and any 64-bit Linux without installing anything | `chmod +x` the file and run it (on a Deck: Desktop Mode, right-click it > Add to Steam) |
 | `windows-release-VERSION.zip` | Windows 10 or 11, 64-bit | Unzip it anywhere, put the game zips in its `roms` folder, double-click the game's `.exe` |
 
-On Linux, start a game from the applications menu (or type `propcycle`, `raveracer`, `tokyowars`, `dirtdash`, `timecrisis`, `acedriver`, `cybercommando`, `cybersled` or `timecrisis2`). The first time, it makes the folder
+On Linux, start a game from the applications menu (or type `propcycle`, `raveracer`, `tokyowars`, `dirtdash`, `armadilloracing`, `timecrisis`, `acedriver`, `cybercommando`, `cybersled` or `timecrisis2`). The first time, it makes the folder
 `~/.local/share/namco-2x-systems/<game>/roms`, tells you which zip is missing and copies any it finds in `~/Downloads`. To uninstall: `sudo apt remove namco-2x-systems`
-(or `sudo dnf remove namco-2x-systems`); your game files, settings and scores stay in `~/.local/share/namco-2x-systems/`.
+your game files, settings and scores stay in `~/.local/share/namco-2x-systems/`.
 **Upgrading from 0.6 or older:** the package was called `namco22`; the new one replaces it, and the games keep using your old
 `~/.local/share/namco22/<game>/` folders (and `namco22-data` portable folders), so nothing has to be moved.
 
@@ -126,6 +126,10 @@ and checked, piece by piece, against the arcade machine running in
 - **Dirt Dash**: the program is translated to C by the same tool
   (`dirtdash/gen/dd_lifted.c`); its master DSP and sound programs are
   turned into C when you build, from your own copy of the game files.
+- **Armadillo Racing**: the program is translated to C by the same tool
+  (`adillor/gen/am_lifted_NN.c`, 16 parts) and matches MAME instruction for
+  instruction through the attract; its master DSP and sound programs are turned
+  into C when you build (the sound notes match MAME's).
 - **Time Crisis**: the program is translated to C by the same tool
   (`timecris/gen/tc_lifted_NN.c`, 16 parts); its master DSP and sound programs are
   turned into C when you build, from your own copy of the game files.
@@ -166,8 +170,8 @@ zips.
   `./install-deps.sh` installs all of these on Debian / Ubuntu, Fedora, Arch, openSUSE, Alpine, Void and Gentoo.
 - **Windows programs** are built from Linux (`./build-windows.sh`): the MinGW-w64 cross compiler (`x86_64-w64-mingw32-gcc`), CMake, `make`, `curl`, `7z` (p7zip)
   and Python 3. The first run downloads SDL2, zlib and Mesa (the fallback OpenGL for computers with no graphics driver), so it needs the internet.
-- **Building the `.deb`, `.rpm` and Windows zip the way a release is made** is done by the author with a script that is not part of this repository (it needs
-  Podman for the Ubuntu and Fedora containers); you do not need it to build or play.
+- **Building the `.deb`, AppImages and Windows zip the way a release is made** is done by the author with a script that is not part of this repository (it needs
+  Podman for the Ubuntu container); you do not need it to build or play.
 
 ## Linux
 
@@ -187,6 +191,7 @@ somewhere else:
 raverace/build.sh ~/Downloads/raverace.zip ~/Downloads/namcoc74.zip        # Rave Racer
 tokyowar/build.sh ~/Downloads/tokyowar.zip                                 # Tokyo Wars
 dirtdash/build.sh ~/Downloads/dirtdash.zip                                 # Dirt Dash
+adillor/build.sh ~/Downloads/adillor.zip                                   # Armadillo Racing
 timecris/build.sh ~/Downloads/timecris.zip                                 # Time Crisis
 acedriver/build.sh ~/Downloads/acedrive.zip ~/Downloads/namcoc74.zip       # Ace Driver
 cybrcomm/build.sh ~/Downloads/cybrcomm.zip ~/Downloads/namcoc74.zip        # Cyber Commando
@@ -194,7 +199,7 @@ cybsled/build.sh ~/Downloads/cybsled.zip ~/Downloads/namcoc67.zip ~/Downloads/na
 tc2/build.sh ~/Downloads/timecrs2.zip                                                    # Time Crisis 2 (then tc2/launch.sh)
 ```
 
-Rave Racer's, Tokyo Wars', Dirt Dash's, Time Crisis', Ace Driver's, Cyber Commando's and Cyber Sled's first builds take a few minutes
+Rave Racer's, Tokyo Wars', Dirt Dash's, Armadillo Racing's, Time Crisis', Ace Driver's, Cyber Commando's and Cyber Sled's first builds take a few minutes
 (Cyber Commando's needs about 4.5 GB of free memory).
 
 Then play:
@@ -204,6 +209,7 @@ Then play:
 ./launch.sh rave      # Rave Racer
 ./launch.sh tokyo     # Tokyo Wars
 ./launch.sh dirt      # Dirt Dash (`./launch.sh dirt jungle` starts in a stage: city, jungle, hill, mountain, snow)
+./launch.sh armadillo # Armadillo Racing (the mouse is the trackball)
 ./launch.sh tc        # Time Crisis (the mouse is the gun)
 ./launch.sh ad        # Ace Driver
 ./launch.sh cc        # Cyber Commando
@@ -222,8 +228,8 @@ All the games run on Windows. The Windows version is built from Linux. Type:
 This makes a `windows-release` folder. Copy it to the Windows computer.
 Put the game files in its `roms` folder: `propcycl.zip` for Prop Cycle,
 `raverace.zip` and `namcoc74.zip` for Rave Racer, `tokyowar.zip` for Tokyo
-Wars, `dirtdash.zip` for Dirt Dash, `timecris.zip` for Time Crisis, `acedrive.zip` and `namcoc74.zip` for Ace Driver, `cybrcomm.zip` and `namcoc74.zip` for Cyber Commando, `cybsled.zip`, `namcoc67.zip` and `namcoc68.zip` for Cyber Sled.
-Then double-click **PropCycle.exe**, **RaveRacer.exe**, **TokyoWars.exe**, **DirtDash.exe**, **TimeCrisis.exe**, **AceDriver.exe**, **CyberCommando.exe** or **CyberSled.exe**.
+Wars, `dirtdash.zip` for Dirt Dash, `adillor.zip` for Armadillo Racing, `timecris.zip` for Time Crisis, `acedrive.zip` and `namcoc74.zip` for Ace Driver, `cybrcomm.zip` and `namcoc74.zip` for Cyber Commando, `cybsled.zip`, `namcoc67.zip` and `namcoc68.zip` for Cyber Sled.
+Then double-click **PropCycle.exe**, **RaveRacer.exe**, **TokyoWars.exe**, **DirtDash.exe**, **ArmadilloRacing.exe**, **TimeCrisis.exe**, **AceDriver.exe**, **CyberCommando.exe** or **CyberSled.exe**.
 
 Building on Windows itself, and what in the code is there for Windows only:
 [docs/WINDOWS.md](docs/WINDOWS.md).
@@ -314,6 +320,11 @@ A game controller works in all the games. In Rave Racer the keys can be
 changed in `raverace/rr_controls.cfg`; in Tokyo Wars and Dirt Dash, in the menu
 (**Controls**) or in `tokyowar/tw_controls.cfg` / `dirtdash/dd_controls.cfg`.
 
+**Armadillo Racing.** Roll the trackball to run. The **mouse is the trackball**: it is captured while you play (`Esc`
+releases it), and a USB trackball is a mouse, so it works as is. The arrow keys and a pad's left stick / D-pad roll the ball too.
+`5` coin (a game costs four), left click / `1` / Enter start, `9` service, `F2` test mode, `Esc` menu. **Controls** has the
+trackball sensitivity and orientation (natural or direct). Settings live in `adillor/am_controls.cfg`.
+
 **Ace Driver.** The keys are Rave Racer's: `5` coin (a game costs two), `X` / Up gas, `Z` / Down brake, Left / Right
 steer, `A` / `S` shift down / up, `V` view change, `F2` test mode, `Esc` menu. A force-feedback wheel works as in Rave Racer
 (**Controls**: FFB strength and direction). Holding **Service** (`9`) while switching test mode on opens the hidden
@@ -401,7 +412,7 @@ Press `Esc` and open **Display**. Your choices are saved by themselves.
 - **"can't be used"**: the zip is the wrong game or version (compare your files with
   [docs/ROM_CHECKSUMS.md](docs/ROM_CHECKSUMS.md)). Prop Cycle
   needs the one called `propcycl`; Rave Racer needs `raverace` and
-  `namcoc74`; Tokyo Wars needs `tokyowar`; Dirt Dash needs `dirtdash`; Time Crisis needs `timecris` (World, TS2 Ver.B); Ace Driver needs `acedrive` (World, AD2) and `namcoc74`; Cyber Commando needs `cybrcomm` (Japan, CY1) and `namcoc74`; Cyber Sled needs `cybsled` (World, CY2), `namcoc67` and `namcoc68`.
+  `namcoc74`; Tokyo Wars needs `tokyowar`; Dirt Dash needs `dirtdash`; Armadillo Racing needs `adillor` (World, AM2 Ver.A); Time Crisis needs `timecris` (World, TS2 Ver.B); Ace Driver needs `acedrive` (World, AD2) and `namcoc74`; Cyber Commando needs `cybrcomm` (Japan, CY1) and `namcoc74`; Cyber Sled needs `cybsled` (World, CY2), `namcoc67` and `namcoc68`.
 - **"still missing dt2vera.1"** (Dirt Dash): the program chips `dt2vera.1` and `dt2vera.2` were not found
   in `dirtdash.zip`. They can be at the top of the zip, in a `dirtdasha/` folder or in any other folder, or
   in a separate `dirtdasha.zip` beside it. If the message says the chip "cannot be used", it says why (wrong
@@ -409,7 +420,7 @@ Press `Esc` and open **Display**. Your choices are saved by themselves.
 - **"c71.bin is missing"**: that message is from an older version. The DSP's BIOS is built in now, so
   `c71.bin` and `namcoc71.zip` are not needed; update to a current build.
 - **Black or white screen**: update your graphics driver.
-- **Slow, or the picture stutters.** Open the game's log (`raveracer.log`, `tokyowar.log`, `dirtdash.log`, `timecris.log`, `acedriver.log`, `cybrcomm.log`,
+- **Slow, or the picture stutters.** Open the game's log (`raveracer.log`, `tokyowar.log`, `dirtdash.log`, `adillor.log`, `timecris.log`, `acedriver.log`, `cybrcomm.log`,
   `propcycl.log` beside the `.exe` on Windows; the terminal window on Linux) and look at these lines:
   - `[HOST] OpenGL: ...` (Prop Cycle: `OpenGL: ...`) names the graphics chip the game is using. It should be
     your graphics card, for example *NVIDIA GeForce RTX 3050 Ti*. If a laptop with **two** graphics chips shows the

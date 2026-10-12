@@ -1097,7 +1097,7 @@ int main(int argc, char* argv[]) {
                 /* Escape always reaches us; everything else goes to the menu
                  * while it is open, so menu clicks never leak into the game. */
                 if (!(ev.type == SDL_KEYDOWN &&
-                      (ev.key.keysym.sym == SDLK_ESCAPE ||
+                      (ev.key.keysym.sym == SDLK_ESCAPE || ev.key.keysym.sym == SDLK_BACKSPACE ||
                        ev.key.keysym.sym == SDLK_F12)) &&
                     ui_handle_event(&ev))
                     continue;
@@ -1105,9 +1105,14 @@ int main(int argc, char* argv[]) {
                 if (ev.type == SDL_KEYDOWN) {
                     switch (ev.key.keysym.sym) {
                     case SDLK_ESCAPE:
-                        /* Escape opens the menu now; Quit lives in it, so a
-                         * stray Escape cannot end a session by accident. */
-                        ui_toggle();
+                        /* Escape opens the menu; Escape again, with the menu
+                         * open, leaves the game (Backspace closes it). A key
+                         * being rebound takes the Escape as "cancel" instead. */
+                        if (!ui_is_open()) ui_toggle();
+                        else if (!ui_cancel_capture()) running = false;
+                        break;
+                    case SDLK_BACKSPACE:
+                        if (ui_is_open() && !ui_cancel_capture()) ui_toggle();
                         break;
                     /* Q no longer quits: it collides with Q = camera/pan up,
                      * and quitting is a menu item now (Escape -> Quit). */

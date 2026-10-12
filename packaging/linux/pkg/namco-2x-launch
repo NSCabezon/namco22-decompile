@@ -4,6 +4,7 @@
 #   namco-2x-launch rave [1-9] [args]     Rave Racer (a number = window scale)
 #   namco-2x-launch tokyo [1-9] [args]    Tokyo Wars (a number = window scale)
 #   namco-2x-launch dirt [1-9] [args]     Dirt Dash (a number = window scale)
+#   namco-2x-launch am [1-9] [args]       Armadillo Racing (a number = window scale; the mouse is the trackball)
 #   namco-2x-launch tc [1-9] [args]       Time Crisis (a number = window scale; the mouse is the gun)
 #   namco-2x-launch ace [1-9] [args]      Ace Driver (a number = window scale)
 #   namco-2x-launch cc [1-9] [args]       Cyber Commando (a number = window scale)
@@ -25,6 +26,7 @@ case "$game" in
     tokyo|tokyowar|tokyowars|tw) title="Tokyo Wars"; dir=tokyowar; zips="tokyowar.zip" ;;
     dirt|dirtdash|dd) title="Dirt Dash"; dir=dirtdash; zips="dirtdash.zip"; extra="dirtdasha.zip" ;;   # a SPLIT MAME set keeps the
                                                     # DT2 Ver.A program chips (dt2vera.1/.2) in dirtdasha.zip (GitHub #8)
+    am|adillor|armadillo|armadilloracing) title="Armadillo Racing"; dir=adillor; zips="adillor.zip" ;;
     tc|timecris|timecrisis|crisis) title="Time Crisis"; dir=timecris; zips="timecris.zip" ;;
     ace|acedriver|ad) title="Ace Driver"; dir=acedriver; zips="acedrive.zip namcoc74.zip" ;;
     cc|cybrcomm|cybercommando|commando) title="Cyber Commando"; dir=cybrcomm; zips="cybrcomm.zip namcoc74.zip" ;;
@@ -116,6 +118,11 @@ case "$dir" in
             exec "$LIB/dd" extracted --window ${1:+"$1"}
         fi
         exec "$LIB/dd" extracted "$@" ;;
+    adillor)
+        if [ $# -eq 0 ] || expr "$1" : '[1-9]$' >/dev/null; then
+            exec "$LIB/am" extracted --window ${1:+"$1"}
+        fi
+        exec "$LIB/am" extracted "$@" ;;
     timecris)
         if [ $# -eq 0 ] || expr "$1" : '[1-9]$' >/dev/null; then
             exec "$LIB/tc" extracted --window ${1:+"$1"}

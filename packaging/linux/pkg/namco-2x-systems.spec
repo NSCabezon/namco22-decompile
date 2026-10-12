@@ -3,7 +3,7 @@
 Name:           namco-2x-systems
 Version:        %{_ver}
 Release:        1%{?dist}
-Summary:        Prop Cycle, Rave Racer, Tokyo Wars, Dirt Dash, Time Crisis, Ace Driver, Cyber Commando, Cyber Sled and Time Crisis 2 -- decompiled Namco System 21 / 22 / 23 engines
+Summary:        Prop Cycle, Rave Racer, Tokyo Wars, Dirt Dash, Armadillo Racing, Time Crisis, Ace Driver, Cyber Commando, Cyber Sled and Time Crisis 2 -- decompiled Namco System 21 / 22 / 23 engines
 License:        MIT
 ExclusiveArch:  x86_64
 Obsoletes:      namco22 < 0.7.0
@@ -15,13 +15,14 @@ Recommends:     xdg-utils
 
 %description
 Native, decompiled engines for the Namco arcade games Prop Cycle (1996),
-Rave Racer (1995), Tokyo Wars (1996), Dirt Dash (1995), Time Crisis (1995), Ace Driver (1994), Cyber Commando (1994), Cyber Sled (1993) and Time Crisis II (1997), rendered with OpenGL.
+Rave Racer (1995), Tokyo Wars (1996), Dirt Dash (1995), Armadillo Racing (1997), Time Crisis (1995), Ace Driver (1994), Cyber Commando (1994), Cyber Sled (1993) and Time Crisis II (1997), rendered with OpenGL.
 
 NO GAME DATA IS INCLUDED. After installing, put the MAME ROM sets in
 ~/.local/share/namco-2x-systems/propcycle/roms/ (propcycl.zip) and
 ~/.local/share/namco-2x-systems/raverace/roms/ (raverace.zip, namcoc74.zip) and
 ~/.local/share/namco-2x-systems/tokyowar/roms/ (tokyowar.zip) and
 ~/.local/share/namco-2x-systems/dirtdash/roms/ (dirtdash.zip) and
+~/.local/share/namco-2x-systems/adillor/roms/ (adillor.zip) and
 ~/.local/share/namco-2x-systems/timecris/roms/ (timecris.zip) and
 ~/.local/share/namco-2x-systems/acedriver/roms/ (acedrive.zip, namcoc74.zip) and
 ~/.local/share/namco-2x-systems/cybrcomm/roms/ (cybrcomm.zip, namcoc74.zip) and
@@ -42,6 +43,7 @@ exit 0
 /usr/bin/raveracer
 /usr/bin/tokyowars
 /usr/bin/dirtdash
+/usr/bin/armadilloracing
 /usr/bin/timecrisis
 /usr/bin/acedriver
 /usr/bin/cybercommando
@@ -52,6 +54,7 @@ exit 0
 /usr/share/applications/raveracer.desktop
 /usr/share/applications/tokyowars.desktop
 /usr/share/applications/dirtdash.desktop
+/usr/share/applications/armadilloracing.desktop
 /usr/share/applications/timecrisis.desktop
 /usr/share/applications/acedriver.desktop
 /usr/share/applications/cybercommando.desktop
@@ -61,6 +64,7 @@ exit 0
 /usr/share/icons/hicolor/256x256/apps/raveracer.png
 /usr/share/icons/hicolor/256x256/apps/tokyowars.png
 /usr/share/icons/hicolor/256x256/apps/dirtdash.png
+/usr/share/icons/hicolor/256x256/apps/armadilloracing.png
 /usr/share/icons/hicolor/256x256/apps/timecrisis.png
 /usr/share/icons/hicolor/256x256/apps/acedriver.png
 /usr/share/icons/hicolor/256x256/apps/cybercommando.png
@@ -69,3 +73,4 @@ exit 0
 %license /usr/share/doc/namco-2x-systems/LICENSE
 %doc /usr/share/doc/namco-2x-systems/README.txt
 %doc /usr/share/doc/namco-2x-systems/rom-note.txt
+%doc /usr/share/doc/namco-2x-systems/hotr

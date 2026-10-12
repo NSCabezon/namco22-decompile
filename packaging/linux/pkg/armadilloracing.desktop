@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Armadillo Racing
+Comment=Namco's 1997 arcade trackball racer (decompiled engine)
+Exec=armadilloracing
+Icon=armadilloracing
+Terminal=false
+Categories=Game;ArcadeGame;

@@ -16,19 +16,19 @@
 #include <string.h>
 #include "lift_rt.h"
 #include "tc2_host.h"
+#include "tc2_game.h"
 
 uint8_t tc2_ram[0x1000000];
-uint8_t tc2_boot[0x400000];
+uint8_t tc2_boot[0x800000];                   /* the boot ROM, ending at the top of the decoded space: tc2_game.boot_size of it */
 uint8_t tc2_data[0x2000000];
 
 /* the data ROMs from the ROM files in extracted/ (tools/setup: the MAME zip unpacked) */
 int tc2_load_data(const char *dir)
 {
-    static const char *pair[2][2] = { { "tss1mtah.2j", "tss1mtal.2h" }, { "tss1mtbh.2m", "tss1mtbl.2f" } };
     for (int h = 0; h < 2; h++) {
         uint8_t *chip[2];
         for (int c = 0; c < 2; c++) {
-            char p[1024]; snprintf(p, sizeof p, "%s/%s", dir, pair[h][c]);
+            char p[1024]; snprintf(p, sizeof p, "%s/%s", dir, tc2_game.data_rom[h][c]);
             FILE *f = fopen(p, "rb"); chip[c] = malloc(0x800000);
             if (!f || fread(chip[c], 1, 0x800000, f) != 0x800000) { fprintf(stderr, "[TC2] cannot read %s\n", p); if (f) fclose(f); return 0; }
             fclose(f);
@@ -46,9 +46,21 @@ static void be_wr(uint8_t *p, int n, uint32_t v) { for (int i = n - 1; i >= 0; i
 
 static void io(const char *rw, uint32_t a, int size, uint32_t v)
 {
-    static int tried; static unsigned from;            /* only when asked for ($TC2_IOLOG): a played session writes no log; $TC2_IOLOG_FROM = a frame */
-    if (!io_log && !tried) { tried = 1; const char *p = getenv("TC2_IOLOG"); if (p) io_log = fopen(p, "w"); p = getenv("TC2_IOLOG_FROM"); if (p) from = (unsigned)atoi(p); }
-    if (io_log && rr_frame >= from && io_n++ < 2000000) fprintf(io_log, "%u %s %08X %d %08X pc %08X\n", rr_frame, rw, a, size, v, rr_pc);
+    static int tried; static unsigned from; static unsigned long max = 2000000; static uint32_t skip[8]; static int nskip;
+    /* only when asked for ($TC2_IOLOG): a played session writes no log. $TC2_IOLOG_FROM = a frame, $TC2_IOLOG_MAX = lines (default 2M),
+     * $TC2_IOLOG_SKIP = up to 8 comma-separated physical addresses, & 0x0FFFFFF0, never logged (a RAM test's port, the beam polls) */
+    if (!io_log && !tried) {
+        tried = 1; const char *p = getenv("TC2_IOLOG"); if (p) io_log = fopen(p, "w");
+        if ((p = getenv("TC2_IOLOG_FROM"))) from = (unsigned)atoi(p);
+        if ((p = getenv("TC2_IOLOG_MAX"))) max = strtoul(p, NULL, 0);
+        for (p = getenv("TC2_IOLOG_SKIP"); p && *p && nskip < 8; ) { char *e; skip[nskip++] = (uint32_t)strtoul(p, &e, 16) & 0x0FFFFFF0u; p = *e ? e + 1 : e; }
+    }
+    if (!io_log || rr_frame < from) return;
+    for (int i = 0; i < nskip; i++) if ((a & 0x0FFFFFF0u) == skip[i]) return;
+    { uint32_t tc2_vpos_dbg(void);
+      extern uint64_t tc2_cycles_now(void);
+      { void tc2_trace_mark(const char *, uint32_t); tc2_trace_mark("IO", a); tc2_trace_mark("CY", (uint32_t)tc2_cycles_now()); }
+      if (io_n++ < max) fprintf(io_log, "%u %s %08X %d %08X pc %08X line %u cyc %llu\n", rr_frame, rw, a, size, v, rr_pc, tc2_vpos_dbg(), (unsigned long long)tc2_cycles_now()); }
 }
 
 /* THE ENVIRONMENT ($TC2_ENV, tools/mame/ioread_from.lua): MAME's device reads for the traced stretch, "IOR addr bits value pc", replayed in order
@@ -122,7 +134,8 @@ static const char *backup_path; static uint8_t backup_saved[0x10000]; static int
 void tc2_backup_load(int window)
 {
     const char *e = getenv("TC2_BACKUP");
-    backup_path = e && *e ? e : window ? "tc2_backup.nv" : NULL;
+    static char def[64]; snprintf(def, sizeof def, "%s_backup.nv", tc2_game.tag);
+    backup_path = e && *e ? e : window ? def : NULL;
     if (!backup_path) return;
     backup_on = 1;
     uint8_t *m = vram_mem[0];
@@ -174,10 +187,57 @@ static uint8_t shared_ram[0x10000];
 uint8_t *tc2_shared_ram(void) { return shared_ram; }   /* the sub-CPU's 0x080000 (src/tc2_h8.c) */
 
 static int c404log(void) { static int v = -1; if (v < 0) v = getenv("TC2_C404LOG") != NULL; return v; }
+/* SYSTEM 23 EVOLUTION 2 (tc2_game.evo2; MAME crszone_state::mips_map): 29 address lines, and the System 23 chips at +0x10000000 -- folded
+ * onto System 23's addresses here, so every chip model below serves both boards. Evolution 2's own registers are answered first, unfolded:
+ *   0x10000058 W  ignored            0x10000080 W  vblank interrupt acknowledge
+ *   0x100000A8 R  IRQ1 status: bit 0 sub-CPU, bit 1 C422     0x100000B0 R  IRQ3 status: bit 0 C451, bit 1 C361     0x100000B4 R  IRQ4 status: bit 1 C450
+ *                 (reading acknowledges the sources it reports)
+ *   0x10400000 W  C450 DMA address   0x1040000C W  C450 DMA size: starts it (src/tc2_c435.c)     0x1040001C R  C450 interrupt pending
+ *   0x1F000000-3  the debug UART (MC6850; nothing is attached on the cabinet): reads 0, writes ignored */
+static uint32_t irq_status(uint32_t p)
+{
+    static const struct { uint32_t a; int src[2]; } reg[] = {
+        { 0x100000A8u, { TC2_SRC_SUB, TC2_SRC_C422 } }, { 0x100000B0u, { TC2_SRC_C451, TC2_SRC_C361 } }, { 0x100000B4u, { -1, TC2_SRC_C450 } } };
+    for (size_t i = 0; i < sizeof reg / sizeof reg[0]; i++) {
+        if (reg[i].a != p) continue;
+        uint32_t v = 0;
+        for (int b = 0; b < 2; b++) if (reg[i].src[b] >= 0 && tc2_irq_is(reg[i].src[b])) { v |= 1u << b; tc2_irq_set(reg[i].src[b], 0); }
+        return v;
+    }
+    return 0;
+}
+static int evo2_read(uint32_t p, int size, uint32_t *v)
+{
+    (void)size;
+    if (p >= 0x100000A8u && p <= 0x100000B7u) { *v = irq_status(p & ~3u); return 1; }
+    if (p >= 0x1040001Cu && p <= 0x1040001Fu) { *v = tc2_irq_is(TC2_SRC_C450) ? 1 : 0; return 1; }
+    if (p >= 0x1F000000u && p <= 0x1F000003u) { *v = 0; return 1; }
+    return 0;
+}
+static int evo2_write(uint32_t p, int size, uint32_t v)
+{
+    (void)size;
+    int tc2_c450_write(uint32_t, uint32_t);
+    if (p >= 0x10000080u && p <= 0x10000083u) { tc2_irq_set(TC2_SRC_VBLANK, 0); return 1; }
+    if (p >= 0x10000058u && p <= 0x1000005Bu) return 1;
+    if (tc2_c450_write(p, v)) return 1;
+    if (p >= 0x1F000000u && p <= 0x1F000003u) return 1;
+    return 0;
+}
+/* the physical address on this board: System 23 decodes 28 lines (the boot ROM at 0x0FC00000), Evolution 2 29 (at 0x1F800000) */
+static inline uint32_t phys(uint32_t a) { return a & (tc2_game.evo2 ? 0x1FFFFFFFu : 0x0FFFFFFFu); }
+static inline uint32_t boot_base(void) { return (tc2_game.evo2 ? 0x20000000u : 0x10000000u) - tc2_game.boot_size; }
+
 uint32_t rr_read(uint32_t a, int size)
 {
-    const uint32_t p = a & 0x0FFFFFFFu;   /* the board decodes 28 address lines (MAME's map: the boot ROM at 0x0FC00000) */
+    uint32_t p = phys(a);
     if (p + (uint32_t)size <= sizeof tc2_ram) return be_rd(tc2_ram + p, size);
+    if (p >= boot_base()) return p - boot_base() + (uint32_t)size <= tc2_game.boot_size ? be_rd(tc2_boot + (p - boot_base()), size) : 0;
+    if (tc2_game.evo2 && p >= 0x10000000u) {                  /* Evolution 2: its own registers, else the System 23 chip 0x10000000 below */
+        uint32_t v; if (evo2_read(p, size, &v)) { io("Re", a, size, v); return v; }
+        if (p < 0x11000000u) { io("Ru", a, size, 0); return 0; }
+        p -= 0x10000000u;
+    }
     if (p >= 0x04400000u && p + (uint32_t)size <= 0x04410000u) {
         uint8_t *m = shared_ram + (p - 0x04400000u);
         uint32_t v;
@@ -185,7 +245,6 @@ uint32_t rr_read(uint32_t a, int size)
         v = be_rd(m, size); io("Rm", a, size, v); return v;
     }
     { uint8_t *m = vram(p, size); if (m) return be_rd(m, size); }
-    if (p >= 0x0FC00000u && p - 0x0FC00000u + (uint32_t)size <= sizeof tc2_boot) return be_rd(tc2_boot + (p - 0x0FC00000u), size);
     if (p >= 0x08000000u && p < 0x0C000000u) {                      /* the data ROMs: 0x08/0x09 = the first 16 MB, 0x0A/0x0B = the second */
         static int romstat = -1; if (romstat < 0) romstat = getenv("TC2_ROMSTAT") != NULL;
         if (romstat) { static uint32_t lo = ~0u, hi; static unsigned long n; static unsigned fr;
@@ -206,8 +265,13 @@ uint32_t rr_read(uint32_t a, int size)
 
 void rr_write(uint32_t a, int size, uint32_t v)
 {
-    const uint32_t p = a & 0x0FFFFFFFu;   /* the board decodes 28 address lines (MAME's map: the boot ROM at 0x0FC00000) */
+    uint32_t p = phys(a);
     if (p + (uint32_t)size <= sizeof tc2_ram) { be_wr(tc2_ram + p, size, v); return; }
+    if (tc2_game.evo2 && p >= 0x10000000u) {
+        if (evo2_write(p, size, v)) { io("We", a, size, v); return; }
+        if (p < 0x11000000u || p >= boot_base()) { io("Wu", a, size, v); return; }
+        p -= 0x10000000u;
+    }
     { uint8_t *m = vram(p, size); if (m) { if (p >= 0x06A08000u && p < 0x06A08040u && c404log()) fprintf(stderr, "C404 W %08X %d %08X pc %08X frame %u\n", p, size, v, rr_pc, rr_frame); be_wr(m, size, v); return; } }
     if (p >= 0x04400000u && p + (uint32_t)size <= 0x04410000u) be_wr(shared_ram + (p - 0x04400000u), size, v);   /* and logged below */
     { int tc2_h8_main_write(uint32_t, int, uint32_t); if (tc2_h8_main_write(p, size, v)) { io("W", a, size, v); return; } }   /* the sub-CPU's start / stop / acknowledge (src/tc2_h8.c) */

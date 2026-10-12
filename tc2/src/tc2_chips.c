@@ -24,9 +24,8 @@
 #include <stdlib.h>
 #include "lift_rt.h"
 #include "tc2_host.h"
+#include "tc2_game.h"
 
-#define IP_C435 0x1000u
-#define IP_C422 0x2000u
 static struct { uint16_t adr; uint32_t ptrom_adr; int test_mode; uint16_t ram[0x10000]; } c417;
 static uint16_t c422[8];
 static struct { uint16_t sdram_a[0x100000], sdram_b[0x100000], sram[0x20000], pczram[0x200]; uint32_t adr; uint16_t status; } c412;
@@ -50,8 +49,7 @@ static uint16_t *c421_at(uint32_t a)
 uint16_t *tc2_c412_sram(void) { return c412.sram; }      /* for the renderer */
 unsigned long tc2_c435_pio_words;     /* command words written to the C435 PIO port (counted: the renderer will consume them) */
 
-void tc2_irq_line(uint32_t bit, int on);
-static void cause_set(uint32_t bit, int on) { tc2_irq_line(bit, on); }
+static void cause_set(int src, int on) { tc2_irq_set(src, on); }
 
 /* the addresses these models own (src/tc2_mem.c drops their replay records) */
 int tc2_chips_owns(uint32_t p)
@@ -65,7 +63,7 @@ int tc2_chips_read(uint32_t p, int size, uint32_t *v)
     if (p == 0x01000028u && size == 4) { *v = 1; return 1; }
     if (size != 2) return 0;
     switch (p) {
-    case 0x02000000u: *v = 0x008Eu | (c417.test_mode ? 0x8000u : 0); return 1;
+    case 0x02000000u: *v = tc2_game.c417_status | (c417.test_mode ? 0x8000u : 0); return 1;
     case 0x02000002u: *v = c417.adr; return 1;
     case 0x02000006u: c417.test_mode = 0; *v = 0; return 1;
     case 0x02000008u: *v = c417.ram[c417.adr]; return 1;
@@ -92,7 +90,7 @@ int tc2_chips_write(uint32_t p, int size, uint32_t v)
     case 0x02000004u: c417.ptrom_adr = c417.ptrom_adr << 16 | (v & 0xFFFFu); return 1;
     case 0x02000006u: c417.ptrom_adr = 0; c417.test_mode = 1; return 1;
     case 0x02000008u: c417.ram[c417.adr] = (uint16_t)v; return 1;
-    case 0x0200000Eu: cause_set(IP_C435, 0); return 1;
+    case 0x0200000Eu: cause_set(TC2_SRC_C435, 0); return 1;
     case 0x0C000004u: return 1;                             /* C412 flags (bit 0: CZ on) */
     case 0x0C000010u: c412.adr = (c412.adr & 0xFFFF0000u) | (v & 0xFFFFu); return 1;
     case 0x0C000012u: c412.adr = (c412.adr & 0x0000FFFFu) | (v & 0xFFFFu) << 16; return 1;
@@ -109,7 +107,7 @@ int tc2_chips_write(uint32_t p, int size, uint32_t v)
     }
     if (p >= 0x06400000u && p <= 0x0640000Fu) {
         const unsigned k = (p - 0x06400000u) >> 1;
-        if (k == 1) { if (v == 0xFFFBu) cause_set(IP_C422, 1); else if (v == 0x000Fu) cause_set(IP_C422, 0); }
+        if (k == 1) { if (v == 0xFFFBu) cause_set(TC2_SRC_C422, 1); else if (v == 0x000Fu) cause_set(TC2_SRC_C422, 0); }
         c422[k] = (uint16_t)v;
         return 1;
     }

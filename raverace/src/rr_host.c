@@ -219,6 +219,12 @@ void rr_host_set_ffb_strength(int pct)
     char v[8]; snprintf(v, sizeof v, "%d", g_cfg_ffb_strength); save_opt("ffb_strength", v);
 }
 void rr_host_set_ffb_invert(bool on) { g_cfg_ffb_invert = on; save_opt("ffb_invert", on ? "1" : "0"); }
+void rr_host_set_stick_steer(int level)
+{
+    g_cfg_stick_steer = (level % RR_STICK_N + RR_STICK_N) % RR_STICK_N;
+    char v[8]; snprintf(v, sizeof v, "%d", g_cfg_stick_steer); save_opt("stick_steering", v);
+    fprintf(stderr, "[INPUT] stick steering = %s (saved)\n", g_stick_steer_name[g_cfg_stick_steer]);
+}
 /* the Online page: the address/name are saved and handed to the RRN1 client; connecting stays a menu action */
 void rr_host_set_net_server(const char *s) { snprintf(g_cfg_net_server, sizeof g_cfg_net_server, "%s", s); save_opt("net_server", g_cfg_net_server); rr_net_set_server(g_cfg_net_server); }
 void rr_host_set_net_name(const char *s) { snprintf(g_cfg_net_name, sizeof g_cfg_net_name, "%s", s); save_opt("net_name", g_cfg_net_name); rr_net_set_name(g_cfg_net_name); }
@@ -429,6 +435,7 @@ static bool pressed(const SDL_Event *e, int act)
     return e->type == SDL_JOYBUTTONDOWN && rr_input_button_matches(act, SDL_JoystickFromInstanceID(e->jbutton.which), e->jbutton.button);
 }
 
+#define SELECT_STEER_RATE 48          /* ADC counts a frame on the selection screens (GitHub #35): Rave Racer's 0xB00 lock in ~1 s */
 #define WHEEL_DEADZONE 32             /* of 32767 (0.1% of the lock, 0.3 degrees of the cabinet's 270): a wheel's own sensor noise, nothing more */
 /* analog sources, strongest wins; returns false when every source is neutral */
 static bool pad_steer_ex(int *out, bool raw_only)   /* -32767..32767; raw_only: leave the gamepads' sticks out (twin stick: they ARE the sticks) */
@@ -441,6 +448,10 @@ static bool pad_steer_ex(int *out, bool raw_only)   /* -32767..32767; raw_only: 
             v = SDL_GameControllerGetAxis(dev[d].gc, SDL_CONTROLLER_AXIS_LEFTX);
             if (v > -g_pad_deadzone && v < g_pad_deadzone) v = 0;
             else v = (v > 0 ? v - g_pad_deadzone : v + g_pad_deadzone) * 32767 / (32767 - g_pad_deadzone);
+            if (v && g_cfg_stick_steer > 0 && g_cfg_stick_steer < RR_STICK_N) {      /* Stick steering (GitHub #42); Linear = untouched */
+                const int m = (int)lround(pow(abs(v) / 32767.0, g_stick_steer_curve[g_cfg_stick_steer]) * 32767.0);
+                v = v > 0 ? (m ? m : 1) : -(m ? m : 1);
+            }
         } else if (rr_input_axis_device(&g_joy_steer, dev[d].js) && g_joy_steer.axis >= 0 && g_joy_steer.axis < SDL_JoystickNumAxes(dev[d].js)) {
             /* a wheel: only a sliver of deadzone, and rescaled to START at its edge. A cut-off +-1000 without the rescale left 3% of
              * the lock dead and then jumped the steering 0x2B at once: a step exactly at the centre, which the steering motor's
@@ -770,7 +781,22 @@ bool rr_host_frame(void)
         int dir = (held(RR_STEER_RIGHT) ? 1 : 0) - (held(RR_STEER_LEFT) ? 1 : 0);
         const rr_game_t *gm = g_rr_game;
         const int half = (gm->steer_max - gm->steer_min) / 2;           /* centre 0x800 */
-        if (!dir && pad_steer(&sx)) g_hw.steer = (uint16_t)(0x800 + sx * half / 32767);
+        if (rr_hw_select_screen()) {
+            /* GitHub #35: the AT/MT, course and class selects choose by where the WHEEL is. Keys, the D-pad and a thumbstick spring
+             * back to the centre, which is the left-of-centre option (AT, CITY), so whatever was picked slid back left on release.
+             * Here they MOVE the wheel (a stick at a rate by how far it is pushed) and it stays where it is left, like a held
+             * wheel; a real wheel stays absolute. The race is untouched: there the wheel re-centres as before. */
+            int st = 0, wx;
+            if (!dir) for (int d = 0; d < MAX_DEV; d++) if (dev[d].gc) {
+                int v = SDL_GameControllerGetAxis(dev[d].gc, SDL_CONTROLLER_AXIS_LEFTX);
+                if (abs(v) > g_pad_deadzone && abs(v) > abs(st)) st = v;
+            }
+            if (dir) ramp(&g_hw.steer, 0x800 + dir * half, gm->steer_min, gm->steer_max, SELECT_STEER_RATE);
+            else if (st) ramp(&g_hw.steer, st > 0 ? gm->steer_max : gm->steer_min, gm->steer_min, gm->steer_max,
+                              1 + (abs(st) - g_pad_deadzone) * SELECT_STEER_RATE / (32767 - g_pad_deadzone));
+            else if (pad_steer_ex(&wx, true)) g_hw.steer = (uint16_t)(0x800 + wx * half / 32767);
+        }
+        else if (!dir && pad_steer(&sx)) g_hw.steer = (uint16_t)(0x800 + sx * half / 32767);
         else ramp(&g_hw.steer, 0x800 + dir * half, gm->steer_min, gm->steer_max, dir ? g_steer_speed : g_steer_return);
         if (!held(RR_GAS) && pad_pedal(true, &pv)) g_hw.gas = (uint16_t)pv;
         else ramp(&g_hw.gas, held(RR_GAS) ? gm->gas_max : 0, 0, gm->gas_max, gm->gas_delta);

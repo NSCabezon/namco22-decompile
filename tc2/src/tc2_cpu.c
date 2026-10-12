@@ -13,6 +13,7 @@
 #include "tc2_mips_rt.h"
 #include "tc2_lifted.h"
 #include "tc2_host.h"
+#include "tc2_game.h"
 
 uint8_t R[RR_REGSPACE];
 int32_t rr_budget;
@@ -152,30 +153,47 @@ void tc2_advance_count(uint32_t instructions)
     const uint32_t c0 = (uint32_t)RG8(TC2_R_COUNT), cmp = (uint32_t)RG8(TC2_R_COMPARE);
     const uint32_t c1 = c0 + ticks;
     if ((uint32_t)(cmp - c0 - 1) < ticks)       /* Count passed Compare in this step */
-        tc2_irq_line(0x8000, 1);
+        tc2_irq_set(TC2_SRC_TIMER, 1);
     RS8(TC2_R_COUNT, (uint64_t)(int64_t)(int32_t)c1);
 }
 
 /* THE INTERRUPT LINES: Cause.IP2..IP7 (0xFC00) are the CPU's interrupt PINS, read-only (the R4650 manual; MAME's set_cop0_reg keeps them:
- * CAUSE = (CAUSE & 0xfc00) | (val & ~0xfc00)). The host's devices drive them through tc2_irq_line; an mtc0 to Cause changes only the rest
+ * CAUSE = (CAUSE & 0xfc00) | (val & ~0xfc00)). The host's devices drive them through tc2_irq_set (a source; the game table picks the pin); an mtc0 to Cause changes only the rest
  * (the software bits IP0/IP1) -- the game's exception entry does `mtc0 zero,Cause` (0x80000284), which must not drop a pending line. */
-static uint32_t irq_lines;                                             /* 0xFC00: IP2 vblank, IP3 C361/sub-CPU, IP4 C435, IP5 C422, IP7 timer */
-static uint32_t irq_src[2];                                            /* who drives them: 0 the main board's devices, 1 the sub-CPU (IP3, shared
-                                                                        * with the C361: MAME's irq_update ORs m_main_irqcause) */
+static uint32_t irq_lines;                                             /* 0xFC00: the pins as the sources drive them */
+static uint32_t irq_on;                                                /* the pending SOURCES (bit = TC2_SRC_*): MAME's m_main_irqcause. The game's
+                                                                        * table maps each to its pin (System 23: IP2 vblank, IP3 C361 + sub-CPU, IP4 C435,
+                                                                        * IP5 C422; Evolution 2: see ../crszone); sources sharing a pin are ORed */
 static void irq_apply(void)
 {
-    irq_lines = irq_src[0] | irq_src[1];
+    uint32_t l = 0;
+    for (int s = 0; s < TC2_SRC_N; s++) if (irq_on >> s & 1) l |= tc2_game.ip[s];
+    irq_lines = l & 0xFC00u;
     RS8(TC2_R_CAUSE, (RG8(TC2_R_CAUSE) & ~0xFC00ULL) | irq_lines);
 }
-void tc2_irq_source(int src, uint32_t bit, int on) { irq_src[src] = on ? (irq_src[src] | bit) : (irq_src[src] & ~bit); irq_apply(); }
-void tc2_irq_line(uint32_t bit, int on) { tc2_irq_source(0, bit, on); }
-int tc2_irq_pending(uint32_t bit) { return (irq_src[0] & bit) != 0; }   /* the main board's own request (the C361's, for its status reads) */
-void tc2_irq_sync_from_cause(void) { irq_src[0] = (uint32_t)RG8(TC2_R_CAUSE) & 0xFC00u; irq_src[1] = 0; irq_apply(); }   /* a snapshot's lines, as MAME's Cause shows them */
+static int32_t granted;                                                 /* the scheduler's current slice (below) */
+void tc2_irq_set(int src, int on)
+{
+    const uint32_t was = irq_lines;
+    irq_on = on ? (irq_on | 1u << src) : (irq_on & ~(1u << src));
+    irq_apply();
+    if (tc2_game.irq_prompt && (irq_lines & ~was) && rr_budget > 0) { granted -= rr_budget; rr_budget = 0; }   /* end the slice here: the next poll takes it */
+}
+int tc2_irq_is(int src) { return (irq_on >> src & 1) != 0; }
+uint32_t tc2_irq_sources(void) { return irq_on; }
+/* a snapshot's lines, as MAME's Cause shows them: each pin to the FIRST source wired to it (on System 23 IP3 = the C361, not the sub-CPU) */
+void tc2_irq_sync_from_cause(void)
+{
+    const uint32_t c = (uint32_t)RG8(TC2_R_CAUSE) & 0xFC00u; uint32_t seen = 0;
+    irq_on = 0;
+    for (int s = 0; s < TC2_SRC_N; s++) { const uint32_t b = tc2_game.ip[s]; if (b && (c & b) && !(seen & b)) { irq_on |= 1u << s; seen |= b; } }
+    irq_apply();
+}
 
 void rr_mips_cop0_write(uint32_t pc, uint32_t off)
 {
     (void)pc;
-    if (off == TC2_R_COMPARE) tc2_irq_line(0x8000, 0);                    /* writing Compare acknowledges the timer */
+    if (off == TC2_R_COMPARE) tc2_irq_set(TC2_SRC_TIMER, 0);                    /* writing Compare acknowledges the timer */
     if (off == TC2_R_CAUSE) RS8(TC2_R_CAUSE, (RG8(TC2_R_CAUSE) & ~0xFC00ULL) | irq_lines);   /* the pins are read-only */
 }
 void rr_mips_setCopReg(uint32_t pc, uint64_t sel, uint64_t reg, uint64_t val) { (void)sel; (void)reg; (void)val; rr_trap(pc, 0, "mtc0 to an unnamed register"); }
@@ -185,17 +203,34 @@ void rr_mips_trap(uint32_t pc, uint64_t code) { rr_trap(pc, (uint32_t)code, "tra
 void rr_mips_SYNC(uint32_t pc, uint64_t stype) { (void)pc; (void)stype; }
 
 /* the scheduler: every poll once the budget is spent -- time advances, the host's devices step, interrupts are delivered */
-static int32_t granted = TC2_SLICE;
+static int32_t granted = TC2_SLICE;   /* (declared above tc2_irq_set) */
 static uint64_t cycles_done;                                           /* cycles of finished slices */
 uint64_t tc2_cycles_now(void) { return cycles_done + (uint64_t)(granted - rr_budget); }   /* the exact cycle, mid-slice too */
 
-void rr_tick(void)
+/* the cycles run since the last accounting -- time advances, the devices step -- and the slice restarts from here. CLOSED BEFORE an
+ * exception is taken: the handler's own polls tick inside take_exception, and counting from the old start would charge the part of the slice
+ * already counted a second time (measured on Crisis Zone: ~860 cycles a C450 DMA interrupt, 300k a frame -- the frame landed 43 lines late,
+ * past the game's line-259 submit cutoff in its heavier frames, and the 3D dropped out for a frame). Counted again after the eret: the
+ * handler's tail after its last poll. */
+static void account(void)
 {
     const int32_t used = granted - rr_budget;
+    granted = rr_budget;
+    if (used <= 0) return;
     cycles_done += (uint64_t)used;
     tc2_advance_count((uint32_t)used);
     tc2_host_step((uint32_t)used);
-    if (rr_in_irq == 0 && irq_pending()) take_exception();
+}
+void rr_tick(void)
+{
+    account();
+    if (rr_in_irq == 0 && irq_pending()) {
+        take_exception(); account();
+        /* an interrupt raised INSIDE the handler (Crisis Zone's C450 handler kicks the next queued DMA, which interrupts again) is taken
+         * right after the eret, as the CPU does -- not a slice later: waiting backed the DMA queue up, and the game's command-buffer
+         * allocator then walked the blocks not yet freed (30x its usual work every ~55 frames). The prompt boards only (tc2_game.irq_prompt) */
+        while (tc2_game.irq_prompt && rr_in_irq == 0 && irq_pending()) { take_exception(); account(); }
+    }
     const uint32_t ev = tc2_until_event();                             /* the next poll lands on the next interrupt event, not up to a slice late */
     granted = (int32_t)(ev && ev < TC2_SLICE ? ev : TC2_SLICE);
     rr_budget = granted;

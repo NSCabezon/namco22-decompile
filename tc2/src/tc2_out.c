@@ -1,11 +1,16 @@
-/* tc2_out.c -- TIME CRISIS 2's OWN COPY of namco-2x-systems engine/ss22_out.c (copied 2026-10-05; TC2 is independent: change it here).
- * The cabinet's OUTPUTS leaving the game: the gun I/O board's output latch (0x6002, src/tc2_h8.c) published every frame with MAME's
- * network-output protocol (tcp 127.0.0.1:8000, "mame_start = timecrs2", then "name = value" on every change) for MAMEHooker / Hook of
- * the Reaper to drive a Sinden / GUN4IR / Blamcon gun's recoil, and a short kick on every connected pad when the gun solenoid fires.
- *   0x6002 bit 0 = the gun's RECOIL SOLENOID (measured: a 3-frame pulse on every shot the game accepts, none out of ammo / in cover)
- *   bits 1, 2   = the other two outputs MAME's namco_tss_io_device passes on (unnamed there)
- * Published names: gun_recoil (bit 0) and out0 / out1 / out2 (the raw bits). TC2_OUT_PORT=<n> (0 = off), TC2_OUT_BIND=<addr>,
- * TC2_RUMBLE=0 (no pad kick), TC2_OUTDBG=1 (log every change). */
+/* tc2_out.c -- the System 23 host's CABINET OUTPUTS (Time Crisis 2, Crisis Zone), published with MAME's network-output protocol
+ * (tcp 127.0.0.1:8000: "mame_start = <set>" on connect, then "name = value" on every change, "mame_stop = 1" at exit) for Hook of the
+ * Reaper / MAMEHooker to drive a Sinden / GUN4IR / Blamcon / OpenFIRE gun's recoil, and a short kick on every connected pad.
+ * (Was TC2's own copy of engine/ss22_out.c, 2026-10-05.)
+ *   gun_recoil   the I/O board's latch 0x6002 bit 0 = the gun's RECOIL (TC2: a 3-frame pulse on every shot the game accepts; Crisis Zone:
+ *                on for the whole burst of its machine gun, bit 1 on while the gun is live in play -- measured on a player's session)
+ *   out0..out2   the latch's raw bits (MAME's namco_tss_io_device output_w, unnamed there)
+ *   analog0      Crisis Zone's I/O board (namco_csz1) analog output 0x6003 (MAME: analog_output_w)
+ *   lamp0..lamp7 the main board's LEDs (0x0D000000), the names MAME itself publishes for these sets (namcos23.cpp ctl_w: lamp i = bit 7-i)
+ * MAME 0.289 leaves the I/O board's output callbacks unconnected for timecrs2 and crszone, so a MAME game file has no recoil signal to map:
+ * tc2/packaging/hotr/<set>.txt are ready Hook of the Reaper DefaultLG files for gun_recoil (GitHub #48).
+ * Display > Recoil outputs (out_net) / Pad rumble on recoil (out_rumble), saved in the game's cfg; TC2_OUT_PORT=<n> (0 = off),
+ * TC2_OUT_BIND=<addr>, TC2_RUMBLE=0, TC2_OUTDBG=1 (log every change). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,11 +38,16 @@ typedef int out_sock;
 #endif
 #endif
 #include "eng/ss22_input.h"
+#include <stdbool.h>
+#include "tc2_game.h"
 
 #define MAX_CLIENTS 4
 static out_sock lsock = OUT_BAD, clients[MAX_CLIENTS];
-static int inited, dbg, rumble_on = 1;
+static int inited, dbg, port_env = -1;
+int tc2_out_net = 1, tc2_out_rumble = 1;            /* Display > Recoil outputs / Pad rumble on recoil */
 static uint16_t prev;
+static uint8_t prev_leds, prev_aout;
+static int have_prev;
 static char rom[32];
 
 static void nonblock(out_sock s)
@@ -49,17 +59,12 @@ static void nonblock(out_sock s)
 #endif
 }
 
-static void init(void)
+static void net_open(void)
 {
-    inited = 1;
-    const char *e = getenv("TC2_OUTDBG"); dbg = e && *e == '1';
-    e = getenv("TC2_RUMBLE"); if (e && *e == '0') rumble_on = 0;
-    for (int i = 0; i < MAX_CLIENTS; i++) clients[i] = OUT_BAD;
-    snprintf(rom, sizeof rom, "timecrs2");                                     /* the set name MAME announces */
-    int port = 8000; e = getenv("TC2_OUT_PORT"); if (e) port = atoi(e);
-    if (port <= 0) return;
+    const int port = port_env >= 0 ? port_env : 8000;
+    if (port <= 0 || lsock != OUT_BAD) return;
 #ifdef _WIN32
-    WSADATA w; if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return;
+    static int wsa; if (!wsa) { WSADATA w; if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return; wsa = 1; }
 #endif
     const char *bind_to = getenv("TC2_OUT_BIND"); if (!bind_to || !*bind_to) bind_to = "127.0.0.1";
     lsock = socket(AF_INET, SOCK_STREAM, 0);
@@ -75,6 +80,46 @@ static void init(void)
     fprintf(stderr, "[OUT] outputs on tcp %s:%d (MAME network-output protocol, set '%s')\n", bind_to, port, rom);
 }
 
+static void send_all(const char *s);
+static void net_close(void)
+{
+    send_all("mame_stop = 1\r");                            /* what MAME sends at exit: Hook of the Reaper closes the gun's port on it */
+    for (int i = 0; i < MAX_CLIENTS; i++) if (clients[i] != OUT_BAD) { out_close(clients[i]); clients[i] = OUT_BAD; }
+    if (lsock != OUT_BAD) { out_close(lsock); lsock = OUT_BAD; }
+}
+
+static void init(void)
+{
+    inited = 1;
+    const char *e = getenv("TC2_OUTDBG"); dbg = e && *e == '1';
+    e = getenv("TC2_RUMBLE"); if (e && *e == '0') tc2_out_rumble = 0;
+    for (int i = 0; i < MAX_CLIENTS; i++) clients[i] = OUT_BAD;
+    snprintf(rom, sizeof rom, "%s", tc2_game.mame_set);                                     /* the set name MAME announces */
+    e = getenv("TC2_OUT_PORT"); if (e) port_env = atoi(e);
+    if (tc2_out_net) net_open();
+}
+
+/* the menu's settings, read with the rest of the game's cfg (eng/ss22_input.c) */
+void tc2_out_load(void)
+{
+    int eng_cfg_int(const char *, int);
+    tc2_out_net = eng_cfg_int("out_net", 1) != 0;
+    tc2_out_rumble = eng_cfg_int("out_rumble", 1) != 0;
+    const char *e = getenv("TC2_RUMBLE"); if (e && *e == '0') tc2_out_rumble = 0;
+}
+void tc2_out_set_net(int on)
+{
+    bool eng_cfg_set_int(const char *, int);
+    tc2_out_net = on != 0; eng_cfg_set_int("out_net", tc2_out_net);
+    if (!inited) return;                                     /* init() opens it */
+    if (tc2_out_net) net_open(); else net_close();           /* off: port 8000 is free for MAME or another program */
+}
+void tc2_out_set_rumble(int on)
+{
+    bool eng_cfg_set_int(const char *, int);
+    tc2_out_rumble = on != 0; eng_cfg_set_int("out_rumble", tc2_out_rumble);
+}
+
 static void send_all(const char *s)
 {
     const int n = (int)strlen(s);
@@ -84,8 +129,16 @@ static void send_all(const char *s)
     }
 }
 
+static void pub(const char *name, int v)
+{
+    char b[48]; snprintf(b, sizeof b, "%s = %d\r", name, v);
+    if (dbg) { extern uint32_t rr_frame; fprintf(stderr, "[OUT] f%u %s\n", rr_frame, b); }
+    send_all(b);
+}
+
 void tc2_out_poll(uint16_t outs)
 {
+    extern uint8_t tc2_ctl_leds; uint8_t tc2_h8_aout(void);
     if (!inited) init();
     if (lsock != OUT_BAD) {
         for (;;) {                                           /* new listeners */
@@ -99,24 +152,23 @@ void tc2_out_poll(uint16_t outs)
             clients[slot] = c;
         }
     }
-    const uint16_t diff = (uint16_t)(outs ^ prev);
-    if (!diff) return;
-    for (int i = 0; i < 3; i++) {
-        if (!(diff >> i & 1)) continue;
-        char b[40]; snprintf(b, sizeof b, "out%d = %d\r", i, (outs >> i) & 1);
-        if (dbg) fprintf(stderr, "[OUT] %s\n", b);
-        send_all(b);
-    }
+    const uint8_t leds = tc2_ctl_leds, aout = tc2_h8_aout();
+    const uint16_t diff = have_prev ? (uint16_t)(outs ^ prev) : 0x7;
+    const uint8_t ldiff = have_prev ? (uint8_t)(leds ^ prev_leds) : 0xFF;
+    for (int i = 0; i < 8; i++) if (ldiff >> (7 - i) & 1) { char n[8]; snprintf(n, sizeof n, "lamp%d", i); pub(n, leds >> (7 - i) & 1); }
+    if (tc2_game.io_analog_out && (!have_prev || aout != prev_aout)) pub("analog0", aout);
+    for (int i = 0; i < 3; i++) if (diff >> i & 1) { char n[8]; snprintf(n, sizeof n, "out%d", i); pub(n, (outs >> i) & 1); }
     if (diff & 1) {                                          /* the gun solenoid */
-        char b[40]; snprintf(b, sizeof b, "gun_recoil = %d\r", outs & 1);
-        send_all(b);
-        if ((outs & 1) && rumble_on) ss22_input_rumble(0xC000, 0xFFFF, 90);   /* a short, hard kick */
+        pub("gun_recoil", outs & 1);
+        if (have_prev && (outs & 1) && tc2_out_rumble) ss22_input_rumble(0xC000, 0xFFFF, 90);   /* a short, hard kick */
     }
-    prev = outs;
+    if (tc2_game.recoil_hold && (outs & 1) && tc2_out_rumble) {     /* a machine gun: keep the pad shaking while it fires */
+        static unsigned n; if (++n % 5 == 0) ss22_input_rumble(0x9000, 0xD000, 110);
+    }
+    prev = outs; prev_leds = leds; prev_aout = aout; have_prev = 1;
 }
 
 void tc2_out_close(void)
 {
-    for (int i = 0; i < MAX_CLIENTS; i++) if (clients[i] != OUT_BAD) { out_close(clients[i]); clients[i] = OUT_BAD; }
-    if (lsock != OUT_BAD) { out_close(lsock); lsock = OUT_BAD; }
+    net_close();
 }

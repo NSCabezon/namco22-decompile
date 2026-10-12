@@ -6,13 +6,14 @@ PROP CYCLE, RAVE RACER, TOKYO WARS, DIRT DASH, TIME CRISIS, ACE DRIVER, CYBER CO
      Rave Racer   raverace.zip  and  namcoc74.zip
      Tokyo Wars   tokyowar.zip
      Dirt Dash    dirtdash.zip
+     Armadillo Racing  adillor.zip
      Time Crisis  timecris.zip
      Ace Driver   acedrive.zip  and  namcoc74.zip
      Cyber Commando  cybrcomm.zip  and  namcoc74.zip
      Cyber Sled   cybsled.zip  and  namcoc67.zip  and  namcoc68.zip
      Time Crisis 2  timecrs2.zip
 
-2. Double-click PropCycle.exe, RaveRacer.exe, TokyoWars.exe, DirtDash.exe, TimeCrisis.exe, AceDriver.exe, CyberCommando.exe, CyberSled.exe or TimeCrisis2.exe.
+2. Double-click PropCycle.exe, RaveRacer.exe, TokyoWars.exe, DirtDash.exe, ArmadilloRacing.exe, TimeCrisis.exe, AceDriver.exe, CyberCommando.exe, CyberSled.exe or TimeCrisis2.exe.
 
 That's it. The first start takes a few seconds while it unpacks the ROMs.
 Nothing needs installing. Keep the "mesa" folder beside PropCycle.exe: it is
@@ -61,7 +62,8 @@ KEYS -- TIME CRISIS 2
   5   insert a coin                            9 service       F2 the operator's test switch
   Esc menu     F8   a white border round the picture (some light guns need it)     F11 fullscreen     F12 screenshot
   Reload: shoot off the screen, hold R / the gun's side button, or let go of the pedal. A pad: a stick aims, A / RB shoots,
-  B / LB is the pedal. Recoil guns: the solenoid goes out as MAME's network output (MAMEHooker, Hook Of The Reaper).
+  B / LB is the pedal. Recoil guns: the solenoid goes out as MAME's network output (Hook Of The Reaper, MAMEHooker): copy
+  hotr\timecrs2.txt into Hook of the Reaper's defaultLG folder (see hotr\README.txt). Display > Recoil outputs turns it on / off.
   Its settings are in tc2.cfg and its rankings in tc2_backup.nv beside the .exe; the log is tc2.log.
 
 KEYS -- DIRT DASH
@@ -72,6 +74,15 @@ KEYS -- DIRT DASH
   M             motion stop                          9          service
   Esc           menu: Display (widescreen, window mode, resolution, frame rate ...),
                 Audio (volume; front speakers / road speaker mix), Controls (rebind the keys)
+  F11           fullscreen                           F12        screenshot
+
+KEYS -- ARMADILLO RACING
+------------------------
+  The MOUSE is the trackball: roll it to run (it is captured while you play; Esc releases it).
+  A USB trackball is a mouse and works as is. Arrow keys or a pad's left stick / D-pad roll the ball too.
+  5             insert a coin (a game costs four)    Left button / 1 / Enter   start
+  9             service                              F2         the operator's test switch
+  Esc           menu: Display, Audio, Controls (trackball sensitivity and orientation, rebind the keys)
   F11           fullscreen                           F12        screenshot
 
 KEYS -- ACE DRIVER
@@ -115,7 +126,8 @@ PROBLEMS?
                                 "propcycl" (World, PR2 Ver.A), "raverace"
                                 (World, RV2 Ver.B) plus "namcoc74", and
                                 "tokyowar" (World, TW2 Ver.A),
-                                "dirtdash" (World, DT2 Ver.A), "timecris"
+                                "dirtdash" (World, DT2 Ver.A), "adillor"
+                                (World, AM2 Ver.A), "timecris"
                                 (World, TS2 Ver.B), "acedrive" (World, AD2)
                                 plus "namcoc74", "cybrcomm" (Japan, CY1)
                                 plus "namcoc74", and "cybsled" (World, CY2)
@@ -124,7 +136,7 @@ PROBLEMS?
 "Windows protected your PC"     Click "More info", then "Run anyway".
                                 (The games are not signed.)
 
-Slow or stuttering              Open the game's log (raveracer.log, tokyowars.log, dirtdash.log, timecris.log, acedriver.log, cybrcomm.log, cybsled.log,
+Slow or stuttering              Open the game's log (raveracer.log, tokyowars.log, dirtdash.log, adillor.log, timecris.log, acedriver.log, cybrcomm.log, cybsled.log,
                                 propcycl.log beside the .exe). The line "[HOST] OpenGL: ..." says which
                                 graphics chip is used: on a laptop with two of them it must be the
                                 fast one (NVIDIA / AMD card). If not, set it by hand: Windows Settings >
@@ -138,7 +150,7 @@ Black screen or won't start     Update your graphics driver. In a virtual
                                 PropCycle.exe.
 
 Something else                  Each game writes a log beside it, from its
-                                last start: propcycl.log / raveracer.log / tokyowar.log / dirtdash.log / timecris.log / acedriver.log / cybrcomm.log / cybsled.log.
+                                last start: propcycl.log / raveracer.log / tokyowar.log / dirtdash.log / adillor.log / timecris.log / acedriver.log / cybrcomm.log / cybsled.log.
                                 It says what went wrong.
 
 Keep the folder somewhere you can write to (Downloads, Desktop, Documents --

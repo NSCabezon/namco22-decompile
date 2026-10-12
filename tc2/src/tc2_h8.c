@@ -27,6 +27,7 @@
 #include "h8_periph.h"
 #include "eng/c352.h"
 #include "tc2_host.h"
+#include "tc2_game.h"
 
 static int dbg(const char *name) { return getenv(name) != NULL; }   /* dev logs: asked once each, at their first use */
 #define DBG(name) ({ static int v_ = -1; if (v_ < 0) v_ = dbg(name); v_; })
@@ -34,7 +35,7 @@ static int dbg(const char *name) { return getenv(name) != NULL; }   /* dev logs:
 void tc2sub_run(h8_cpu *c);
 void tc2io_run(h8_cpu *c);
 uint8_t *tc2_shared_ram(void);
-void tc2_irq_source(int src, uint32_t bit, int on);
+void tc2_irq_set(int src, int on);
 extern uint16_t tc2_inputs, g_ss22_gun_x, g_ss22_gun_y;
 extern _Bool g_ss22_gun_off;
 
@@ -50,19 +51,21 @@ static uint8_t sub_p8 = 0x02, sub_pa = 0, sub_pb = 0x50;
 static int jvs_sense_init;                       /* the I/O board says it is initialised (its port 4 bit 2) */
 static uint8_t io_out;                           /* 0x6002: the cabinet outputs (bit 0 = the gun's recoil solenoid: src/tc2_out.c) */
 uint8_t tc2_h8_outputs(void) { return io_out; }
+static uint8_t io_aout;                          /* 0x6003: Crisis Zone's I/O board analog output (MAME namco_csz1_device::analog_output_w) */
+uint8_t tc2_h8_aout(void) { return io_aout; }
 static uint64_t main_now;                        /* the main CPU's cycle at the last tc2_h8_run */
 unsigned long tc2_h8_untranslated;
 
 /* ---------------------------------------------------------------- time */
-static int64_t sub_target(uint64_t m) { return (int64_t)(m / 10); }
-static int64_t io_target(uint64_t m) { return (int64_t)(m * 64 / 735); }
-static int64_t io_from_sub(int64_t s) { return s * 640 / 735; }      /* sub states -> I/O states (same instant) */
-static int64_t sub_from_io(int64_t i) { return i * 735 / 640; }
+static int64_t sub_target(uint64_t m) { return (int64_t)(m / tc2_game.sub_div); }
+static int64_t io_target(uint64_t m) { return (int64_t)(m * tc2_game.io_num / tc2_game.io_den); }
+static int64_t io_from_sub(int64_t s) { return s * (int64_t)(tc2_game.io_num * tc2_game.sub_div) / (int64_t)tc2_game.io_den; }   /* sub states -> I/O states (same instant) */
+static int64_t sub_from_io(int64_t i) { return i * (int64_t)tc2_game.io_den / (int64_t)(tc2_game.io_num * tc2_game.sub_div); }
 
 /* ---------------------------------------------------------------- the C352 */
 static void c352_catch_up(void)
 {
-    const uint64_t due = main_now / 1920;
+    const uint64_t due = main_now / tc2_game.c352_div;
     static int16_t buf[4 * 256];
     while (c352_done < due) {
         const int n = due - c352_done > 256 ? 256 : (int)(due - c352_done);
@@ -107,7 +110,7 @@ static uint8_t sub_port_in(void *u, int port)
     (void)u;
     switch (port) {
     case 6: return (uint8_t)(0xFD | (!jvs_sense_init) << 1);
-    case 7: return 0;
+    case 7: return tc2_game.sub_p7;
     case 8: return sub_p8;
     case 10: return sub_pa;
     case 11: return sub_pb;
@@ -167,7 +170,14 @@ static uint8_t sub_rd8(void *u, uint32_t a)
     if (h8p_owns(&subp, a)) return h8p_read(&subp, a);
     return 0;
 }
-static uint16_t sub_rd16(void *u, uint32_t a) { return (uint16_t)(sub_rd8(u, a) << 8 | sub_rd8(u, a + 1)); }
+/* $TC2_SUBWATCH=<sub address, hex>: every 16-bit access of the sub-CPU to that word, with its PC (the shared-RAM handshakes) -- a debug probe */
+static long subwatch(void) { static long w = -2; if (w == -2) { const char *e = getenv("TC2_SUBWATCH"); w = e ? strtol(e, NULL, 16) : -1; } return w; }
+static uint16_t sub_rd16(void *u, uint32_t a)
+{
+    const uint16_t v = (uint16_t)(sub_rd8(u, a) << 8 | sub_rd8(u, a + 1));
+    if ((long)a == subwatch()) { static unsigned long n; if (n++ < 400) fprintf(stderr, "[SUBW] frame %u R %06X = %04X pc %06X\n", rr_frame, (unsigned)a, v, sub.pc); }
+    return v;
+}
 static void sub_wr8(void *u, uint32_t a, uint8_t v)
 {
     (void)u;
@@ -178,8 +188,9 @@ static void sub_wr8(void *u, uint32_t a, uint8_t v)
 }
 static void sub_wr16(void *u, uint32_t a, uint16_t v)
 {
+    if ((long)a == subwatch()) { static unsigned long n; if (n++ < 400) fprintf(stderr, "[SUBW] frame %u W %06X = %04X pc %06X\n", rr_frame, (unsigned)a, v, sub.pc); }
     if (a >= 0x280000 && a < 0x288000) { c352_catch_up(); c352_write(&c352, (a - 0x280000) >> 1, v, 0xFFFF); return; }
-    if (a == 0x300020) { if (DBG("TC2_SUBIRQLOG")) fprintf(stderr, "[SUBIRQ] %04X frame %u line %llu\n", v, rr_frame, (unsigned long long)line_k); if (v == 0x3170) tc2_irq_source(1, TC2_IP_RASTER, 1); return; }   /* MAME sub_interrupt_main_w */
+    if (a == 0x300020) { if (DBG("TC2_SUBIRQLOG")) fprintf(stderr, "[SUBIRQ] %04X frame %u line %llu\n", v, rr_frame, (unsigned long long)line_k); if (v == 0x3170) tc2_irq_set(TC2_SRC_SUB, 1); return; }   /* MAME sub_interrupt_main_w */
     if (h8p_owns(&subp, a)) { h8p_write_word(&subp, a, v); return; }
     sub_wr8(u, a, (uint8_t)(v >> 8)); sub_wr8(u, a + 1, (uint8_t)v);
 }
@@ -219,7 +230,7 @@ static uint8_t io_switches(int n)                                  /* namcoio.cp
     if (n == 0)
         return (uint8_t)~((!!(in & IN_USR_ENTER)) << 7 | (!!(in & IN_USR_UP)) << 6 | (!!(in & IN_USR_DOWN)) << 5 | (!!(in & IN_TEST)) << 4
                         | 1 << 2 /* the coin counter is connected */ | (!!(in & IN_COIN)));
-    return (uint8_t)~((!!(in & IN_PEDAL)) << 1 | (!!(in & IN_TRIGGER)));
+    return (uint8_t)~((!!(in & IN_PEDAL)) << 1 | (!!(in & IN_TRIGGER)) | tc2_game.io_6001_held);
 }
 static uint8_t io_gun(int off)                                      /* gun_r: X, Y, Y + 1 -- low bytes at 0..2, high bytes at 3..5 */
 {
@@ -227,27 +238,37 @@ static uint8_t io_gun(int off)                                      /* gun_r: X,
     const uint16_t d = (off % 3) == 0 ? x : (off % 3) == 1 ? y : (uint16_t)(y + 1);
     return off < 3 ? (uint8_t)d : (uint8_t)(d >> 8);
 }
+/* $TC2_SWLOG=from:to -- the I/O board's switch reads in those frames (was fixed at 598..645) */
+static int swlog_on(void)
+{
+    static long f0 = -2, f1; if (f0 == -2) { f0 = -1; const char *e = getenv("TC2_SWLOG"); if (e) { f0 = 598; f1 = 645; sscanf(e, "%ld:%ld", &f0, &f1); } }
+    return f0 >= 0 && (long)rr_frame >= f0 && (long)rr_frame <= f1;
+}
 static uint8_t io_rd8(void *u, uint32_t a)
 {
     (void)u;
     if (a < 0x4000) return io_rom[a];
     if (a >= 0xC000 && a < 0xFF80) return io_ram[a - 0xC000];
-    if (a == 0x6000 || a == 0x6001) { uint8_t v = io_switches(a & 1); if (DBG("TC2_SWLOG") && rr_frame >= 598 && rr_frame <= 645) fprintf(stderr, "[SW] %04X = %02X frame %u\n", (unsigned)a, v, rr_frame); return v; }
+    if (a == 0x6000 || a == 0x6001) { uint8_t v = io_switches(a & 1); if (swlog_on()) fprintf(stderr, "[SW] %04X = %02X frame %u\n", (unsigned)a, v, rr_frame); return v; }
     if (a >= 0x7000 && a <= 0x7005) return io_gun((int)(a - 0x7000));
     if (a == 0x7007) return 0x00;                               /* the gun's acknowledge (MAME namco_tss_io_device::gun_ack_r) */
-    if (h8p_owns(&iop, a)) { uint8_t v = h8p_read(&iop, a); if (DBG("TC2_SWLOG") && (a == 0xFFB7 || a == 0xFFBB) && rr_frame >= 598 && rr_frame <= 645) fprintf(stderr, "[SW] %04X = %02X frame %u\n", (unsigned)a, v, rr_frame); return v; }
+    if (h8p_owns(&iop, a)) { uint8_t v = h8p_read(&iop, a); if (swlog_on() && (a == 0xFFB7 || a == 0xFFBB)) fprintf(stderr, "[SW] %04X = %02X frame %u\n", (unsigned)a, v, rr_frame); return v; }
     return 0xFF;
 }
 static uint16_t io_rd16(void *u, uint32_t a) { return (uint16_t)(io_rd8(u, a) << 8 | io_rd8(u, a + 1)); }
 static void io_wr8(void *u, uint32_t a, uint8_t v)
 {
     (void)u;
-    if (a >= 0xC000 && a < 0xFF80) { io_ram[a - 0xC000] = v; return; }
+    if (a >= 0xC000 && a < 0xFF80) {
+        { static long w = -2; if (w == -2) { const char *e = getenv("TC2_IOWATCH"); w = e ? strtol(e, NULL, 16) : -1; }   /* $TC2_IOWATCH=<I/O RAM address>: its writes */
+          if ((long)a == w && io_ram[a - 0xC000] != v) { static unsigned long n; if (n++ < 200) fprintf(stderr, "[IOW] frame %u %04X = %02X (was %02X) pc %04X\n", rr_frame, (unsigned)a, v, io_ram[a - 0xC000], io.pc); } }
+        io_ram[a - 0xC000] = v; return; }
     if (a == 0x6002) {
         static int dbg = -1; if (dbg < 0) dbg = getenv("TC2_OUTLOG") != NULL;
         if (dbg && v != io_out) { extern uint32_t rr_frame; fprintf(stderr, "[OUT] frame %u: 0x6002 %02X -> %02X\n", rr_frame, io_out, v); }
         io_out = v; return;
     }
+    if (a == 0x6003 && tc2_game.io_analog_out) { io_aout = v; return; }
     if (h8p_owns(&iop, a)) h8p_write(&iop, a, v);
 }
 static void io_wr16(void *u, uint32_t a, uint16_t v)
@@ -287,7 +308,7 @@ static void run_to(h8_cpu *c, h8p *p, int64_t target, void (*run)(h8_cpu *))
  * (a breakpoint on the handler: 3 2 3 2 2 3 2 ... a frame), the rate the sub-CPU's delay counts (0x084052) run at.
  * Time in pixel clocks (25.6 MHz; a line is 814) = main cycles * 200 / 1323. */
 static int irq1_pin;
-static uint64_t px_cycle(uint64_t px) { return (px * 1323u + 199u) / 200u; }   /* the first main cycle at or after pixel clock px */
+static uint64_t px_cycle(uint64_t px) { return (px * tc2_game.px_den + tc2_game.px_num - 1) / tc2_game.px_num; }   /* the first main cycle at or after pixel clock px */
 static uint64_t off_j;                                   /* the next release (j-th) */
 #define OFF_PX(j) (45u * 814u + 32u + (j) * (46u * 814u + 32u))
 static void irq1_set(int on)
@@ -340,6 +361,7 @@ void tc2_h8_vblank(int on)
         fprintf(stderr, "[H8T] frame %u sub PC %06X ccr %02X%s io PC %04X sense %d irq 13:%lu 26:%lu 53:%lu io28:%lu\n", rr_frame, sub.pc, sub.ccr, sub_running ? "" : " (held)", io.pc, jvs_sense_init,
                 n_irq[0][13], n_irq[0][26], n_irq[0][53], n_irq[1][28]); }
     sub_pb = (uint8_t)((sub_pb & 0x7F) | (on ? 0x80 : 0));   /* port B bit 7 = vblank (the IRQ1 pin is the scan-line timers, above) */
+    if (sub_running && (subp.adcr & 0x80)) { h8p_sync(&subp); h8p_adtrg(&subp, on); } else subp.adtrg = on;   /* and the A/D's ADTRG pin (MAME namcos23_state::vblank) */
 }
 
 /* the main CPU's side: MAME mcuen_w (0x04C3FF00-0F) */
@@ -348,7 +370,7 @@ int tc2_h8_main_write(uint32_t p, int size, uint32_t v)
     if (p < 0x04C3FF00u || p > 0x04C3FF0Fu) return 0;
     (void)size;
     const uint32_t off = (p - 0x04C3FF00u) >> 1;
-    if (off == 2) tc2_irq_source(1, TC2_IP_RASTER, 0);               /* the sub-CPU's interrupt acknowledged */
+    if (off == 2) tc2_irq_set(TC2_SRC_SUB, 0);               /* the sub-CPU's interrupt acknowledged */
     if (off == 5 && sub_ok) {
         if (v & 0xFFFF) {                                            /* (re)start: a reset, then it runs */
             sub.cycles = sub_target(main_now);
@@ -388,7 +410,7 @@ void tc2_h8_init(const char *extracted)
     } else fprintf(stderr, "[H8] no tssioprog.ic3: no I/O board\n");
     wave = calloc(1, 0x1000000);
     char p[1024];
-    snprintf(p, sizeof p, "%s/tss1wavel.2c", extracted); if (!load(p, wave, 0x800000)) fprintf(stderr, "[H8] cannot read %s: the C352 is silent\n", p);
-    snprintf(p, sizeof p, "%s/tss1waveh.2a", extracted); if (!load(p, wave + 0x800000, 0x800000)) fprintf(stderr, "[H8] cannot read %s\n", p);
+    snprintf(p, sizeof p, "%s/%s", extracted, tc2_game.wave[0]); if (!load(p, wave, 0x800000)) fprintf(stderr, "[H8] cannot read %s: the C352 is silent\n", p);
+    snprintf(p, sizeof p, "%s/%s", extracted, tc2_game.wave[1]); if (!load(p, wave + 0x800000, 0x800000)) fprintf(stderr, "[H8] cannot read %s\n", p);
     c352_init(&c352, wave, 0x1000000);
 }

@@ -11,6 +11,7 @@
 #include "ss22_board.h"
 #include "ss22_gl.h"
 #include "eng_display.h"
+#include "tc2_game.h"
 
 #define PAD_DEADZONE   4000     /* of 32767: an Xbox pad rests near 3000. 8000 left a quarter of the stick dead, and with the curve below the steering
                                 * all came in the stick's outer half -- easing off a turn dropped it back towards the centre */
@@ -398,6 +399,8 @@ static int nsw(void) { return (game->test_bit ? 1 : 0) + (game->service_bit ? 1 
 static int nffb(void) { return game->wheel_motor ? (game->torque.addr ? 4 : 2) : 0; }   /* Force feedback, FFB direction[, FFB centering, FFB road effects] */
 static int gun_flash_on = 1;                                     /* light-gun games: draw the shot flash (gun_flash in the cfg; ss22_gl.c hides it when 0) */
 static int aim_speed = 150;                                      /* the stick / D-pad / arrow-key crosshair speed, percent (aim_speed in the cfg; was 100, a bit slow) */
+static int aim_dz = 12;                                          /* the sticks' deadzone for aiming, % of full deflection (aim_deadzone in the cfg, as
+                                                                   * Time Crisis 1's engine/ss22_input.c; 12% = PAD_DEADZONE exactly) */
 static int mouse_speed = 100;                                    /* the mouse's reach, percent (mouse_speed in the cfg): the crosshair = the picture's centre + the pointer's offset x this, so 150 reaches the edges with a smaller move; 100 = the crosshair is under the pointer */
 static const int mouse_presets[] = { 100, 125, 150, 200, 300 };
 void eng_ui_set_hint(const char *text, int frames);
@@ -409,7 +412,7 @@ void ss22_input_mouse_step(int dir)                                  /* F7: the 
     char b[64]; if (mouse_speed == 100) snprintf(b, sizeof b, "Mouse speed: Direct"); else snprintf(b, sizeof b, "Mouse speed: %d%%", mouse_speed);
     eng_ui_set_hint(b, 120);
 }
-static int ngun(void) { return game->light_gun ? 4 : 0; }        /* Gun shot flash, Gun border, Aim speed, Mouse speed */
+static int ngun(void) { return game->light_gun ? 5 : 0; }        /* Gun shot flash, Gun border, Aim speed, Mouse speed, Pad aim deadzone */
 /* the same setting from the Display page (next to Crosshair): one value, saved as gun_flash */
 int tc2_depth_on(void); void tc2_depth_set(int on);   /* src/tc2_render.c */
 /* the shot flash's strength in percent (gun_flash_pct in the cfg; an old gun_flash=0 still means none): 100 = as the arcade */
@@ -449,6 +452,7 @@ static void pg_text(int r, char *l, size_t ln, char *v, size_t vn)
         if (mouse_speed == 100) snprintf(v, vn, "Direct (crosshair under the pointer)"); else snprintf(v, vn, "%d%% (crosshair moves %d%% as far)", mouse_speed, mouse_speed);
         return;
     }
+    if (r == 4 && ngun()) { snprintf(l, ln, "Pad aim deadzone"); snprintf(v, vn, "%d%%", aim_dz); return; }
     r -= ngun();
     if (r == 0) { snprintf(l, ln, "Reset keyboard defaults"); return; }
     if (r == 1) { snprintf(l, ln, "Stick steering"); snprintf(v, vn, "%s", steer_levels[steer_level].name); return; }
@@ -519,6 +523,13 @@ static void pg_change(int r, int dir)
         eng_cfg_set_int("mouse_speed", mouse_speed);
         return;
     }
+    if (r == 4 && ngun()) {                                        /* Pad aim deadzone: 0..40 %, Left/Right 2% steps, Enter cycles (as TC1) */
+        aim_dz = dir ? aim_dz + 2 * dir : (aim_dz >= 40 ? 0 : aim_dz + 2);
+        if (aim_dz < 0) aim_dz = 0;
+        if (aim_dz > 40) aim_dz = 40;
+        eng_cfg_set_int("aim_deadzone", aim_dz);
+        return;
+    }
     r -= ngun();
     if (r == 0) {
         for (int a = 0; a < game->n; a++) if (bound[a] != game->actions[a].def) binding_set(a, game->actions[a].def);
@@ -570,6 +581,9 @@ void ss22_input_init(const ss22_input_game *g)
         }
     }
     if (g->light_gun) {
+        aim_dz = eng_cfg_int("aim_deadzone", 12);
+        if (aim_dz < 0) aim_dz = 0;
+        if (aim_dz > 40) aim_dz = 40;
         mouse_speed = eng_cfg_int("mouse_speed", 100);
         if (mouse_speed < 50) mouse_speed = 50;
         if (mouse_speed > 400) mouse_speed = 400;
@@ -581,7 +595,9 @@ void ss22_input_init(const ss22_input_game *g)
         if (getenv("ENG_GUN_FLASH")) { const int e = atoi(getenv("ENG_GUN_FLASH")); gun_flash_on = e <= 0 ? 0 : e == 1 || e > 100 ? 100 : e; }   /* tests: without touching the cfg */
         ss22_gl_set_gun_flash(gun_flash_on);
     }
-    tc2_depth_set(eng_cfg_int("depth", 1));                 /* Display > Depth: exact (default) or the arcade's sorting */
+    tc2_depth_set(eng_cfg_int("depth", tc2_game.depth_default));
+    { void tc2_picture_load(void); tc2_picture_load(); }
+    { void tc2_out_load(void); tc2_out_load(); }                         /* Display > Recoil outputs / Pad rumble on recoil (src/tc2_out.c) */                 /* Display > Arcade gamma / Gamma / Brightness (src/tc2_render.c) */                 /* Display > Depth: exact (default) or the arcade's sorting */
     SDL_GameControllerAddMappingsFromFile("gamecontrollerdb.txt");
     pad_scan();
     raw_scan();
@@ -734,8 +750,9 @@ static void aim_update(const uint8_t *k)
                                                          { SDL_CONTROLLER_AXIS_LEFTX,  SDL_CONTROLLER_AXIS_LEFTY } };
         for (int s = 0; s < 2; s++) {
             const int x = SDL_GameControllerGetAxis(c, ax[s][0]), y = SDL_GameControllerGetAxis(c, ax[s][1]);
-            if (abs(x) > PAD_DEADZONE) dx += x / 32767.0f;
-            if (abs(y) > PAD_DEADZONE) dy += y / 32767.0f;
+            const int dz = aim_dz == 12 ? PAD_DEADZONE : (int)(aim_dz * 327.67f);   /* Pad aim deadzone (the default 12% is PAD_DEADZONE exactly) */
+            if (abs(x) > dz) dx += x / 32767.0f;
+            if (abs(y) > dz) dy += y / 32767.0f;
         }
         if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_DPAD_LEFT))  dx -= 1;     /* and the D-pad */
         if (SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) dx += 1;

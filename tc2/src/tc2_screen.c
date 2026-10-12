@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include "lift_rt.h"
 #include "tc2_host.h"
+#include "tc2_game.h"
 
 #define LINE_PIX   814ull
 #define FRAME_PIX  (814ull * 525ull)
@@ -59,18 +60,16 @@ void tc2_text_scroll(uint16_t linexscroll[1024], uint16_t *yscroll)   /* at the 
 uint16_t tc2_c361_xscroll(void) { return c361_xscroll; }
 uint16_t tc2_c361_yscroll(void) { return c361_yscroll; }
 
-static uint64_t pix_at(uint64_t c) { return off_pix + c * 200u / 1323u; }
+static uint64_t pix_at(uint64_t c) { return off_pix + c * tc2_game.px_num / tc2_game.px_den; }
 static uint64_t cycles_until(uint64_t pix_target, uint64_t c)    /* the first cycle >= c whose pixel clock reaches pix_target */
 {
     const uint64_t p = pix_at(c);
     if (pix_target <= p) return 0;
-    uint64_t d = ((pix_target - off_pix) * 1323u + 199u) / 200u;   /* the first cycle count reaching it */
+    uint64_t d = ((pix_target - off_pix) * tc2_game.px_den + tc2_game.px_num - 1) / tc2_game.px_num;   /* the first cycle count reaching it */
     return d > c ? d - c : 0;
 }
-void tc2_irq_line(uint32_t bit, int on);
 void tc2_h8_vblank(int on);
-int tc2_irq_pending(uint32_t bit);
-static void cause(uint32_t bit, int on) { tc2_irq_line(bit, on); }
+static void cause(int src, int on) { tc2_irq_set(src, on); }
 
 /* power-on: MAME's beam starts at line 480 -- the start of vertical blank -- not at line 0 (measured: the POST's first beam read at
  * 0x80025C60 is line 227 on MAME, 272 with the beam starting at line 0: 45 lines = 525 - 480), with vblank asserted */
@@ -78,7 +77,7 @@ void tc2_screen_reset(void)
 {
     cyc = 0; off_pix = VBL_LINE * LINE_PIX; vbl_active = 1; c361_line = 0x1FF;
     next_vbl_on = off_pix + FRAME_PIX; next_vbl_off = FRAME_PIX; next_c361 = NEVER;
-    cause(TC2_IP_VBLANK, 1);
+    cause(TC2_SRC_VBLANK, 1);
 }
 /* a snapshot is taken at MAME's frame_done = the start of vertical blank (line 480); vblank was just asserted */
 void tc2_screen_at_vblank(void)
@@ -99,9 +98,9 @@ static void fire_due(uint64_t p)
         if (next_vbl_off < e) { e = next_vbl_off; k = 1; }
         if (next_c361 < e) { e = next_c361; k = 2; }
         if (e > p) return;
-        if (k == 0) { vbl_active = 1; cause(TC2_IP_VBLANK, 1); tc2_h8_vblank(1); rr_frame++; next_vbl_on += FRAME_PIX; tc2_on_vblank(rr_frame); }
-        else if (k == 1) { cause(TC2_IP_VBLANK, 0); tc2_h8_vblank(0); next_vbl_off += FRAME_PIX; }
-        else { cause(TC2_IP_RASTER, c361_line != 0x1FF); next_c361 = NEVER; }   /* one-shot (MAME: "TC2 resets it each VBL") */
+        if (k == 0) { vbl_active = 1; cause(TC2_SRC_VBLANK, 1); tc2_h8_vblank(1); rr_frame++; next_vbl_on += FRAME_PIX; tc2_on_vblank(rr_frame); }
+        else if (k == 1) { cause(TC2_SRC_VBLANK, 0); tc2_h8_vblank(0); next_vbl_off += FRAME_PIX; }
+        else { cause(TC2_SRC_C361, c361_line != 0x1FF); next_c361 = NEVER; }   /* one-shot (MAME: "TC2 resets it each VBL") */
     }
 }
 
@@ -124,12 +123,16 @@ static uint32_t vpos_now(int *vblank)
     return line;
 }
 
+uint32_t tc2_vpos_dbg(void) { int vb; return vpos_now(&vb); }   /* the beam line, for probes ($TC2_IOLOG) */
 int tc2_screen_read(uint32_t p, int size, uint32_t *v)
 {
     if (size != 2) return 0;
     int vb;
-    if (p == 0x0682000Au) { const uint32_t l = vpos_now(&vb); cause(TC2_IP_RASTER, 0); *v = (l * 2) | (uint32_t)vb; return 1; }
-    if (p == 0x0682000Cu) { vpos_now(&vb); *v = (tc2_irq_pending(TC2_IP_RASTER) || vb) ? 1 : 0; cause(TC2_IP_RASTER, 0); return 1; }
+    if (p == 0x0682000Au) { const uint32_t l = vpos_now(&vb); cause(TC2_SRC_C361, 0); *v = (l * 2) | (uint32_t)vb;
+        { static int lg = -1; static uint32_t fr = ~0u; if (lg < 0) lg = getenv("TC2_VPLOG") != NULL;   /* $TC2_VPLOG: the line of each frame's first beam read */
+          extern uint32_t rr_frame; if (lg && rr_frame != fr) { fr = rr_frame; fprintf(stderr, "[VP] %u %u\n", rr_frame, l); } }
+        return 1; }
+    if (p == 0x0682000Cu) { vpos_now(&vb); *v = (tc2_irq_is(TC2_SRC_C361) || vb) ? 1 : 0; cause(TC2_SRC_C361, 0); return 1; }
     return 0;
 }
 
@@ -149,7 +152,7 @@ int tc2_screen_write(uint32_t p, int size, uint32_t v)
         next_c361 = t;
         return 1;
     }
-    if (p == 0x0D00000Au) { if (vbl_active) { vbl_active = 0; cause(TC2_IP_VBLANK, 0); } return 1; }   /* MAME: ctl_vbl_ack_w */
+    if (p == 0x0D00000Au) { if (vbl_active) { vbl_active = 0; cause(TC2_SRC_VBLANK, 0); } return 1; }   /* MAME: ctl_vbl_ack_w */
     return 0;
 }
 

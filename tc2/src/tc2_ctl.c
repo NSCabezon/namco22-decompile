@@ -13,7 +13,7 @@
 #include <stdint.h>
 #include "lift_rt.h"
 #include "tc2_host.h"
-int tc2_irq_pending(uint32_t bit);
+#include "tc2_game.h"
 
 uint16_t tc2_ctl_p1 = 0xFFF, tc2_ctl_p2 = 0xFFF, tc2_ctl_dsw = 0xFF;
 __attribute__((constructor)) static void ctl_dsw_env(void) { const char *e = getenv("TC2_DSW"); if (e) tc2_ctl_dsw = (uint16_t)strtoul(e, NULL, 16); }   /* test: $TC2_DSW=FE = the Service Mode DIP on */
@@ -24,7 +24,7 @@ static uint16_t shifter[2];
 int tc2_ctl_read(uint32_t p, int size, uint32_t *v)
 {
     if (size != 2 || p < 0x0D000002u || p > 0x0D000006u || (p & 1)) return 0;
-    if (p == 0x0D000002u) { *v = tc2_ctl_dsw | (tc2_irq_pending(TC2_IP_RASTER) ? 0x400u : 0); return 1; }
+    if (p == 0x0D000002u) { *v = tc2_ctl_dsw | (tc2_irq_is(TC2_SRC_C361) ? 0x400u : 0); return 1; }
     const int k = p == 0x0D000006u;
     *v = (shifter[k] & 0x800) ? 0xFFFFu : 0x0000u;
     shifter[k] = (uint16_t)(shifter[k] << 1 | 1);

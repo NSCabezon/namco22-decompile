@@ -68,6 +68,7 @@ static const rr_game_t ace = {
     .task_sp = 0x10000030, .task_sp_empty = 0x10000030,   /* A6-0x7FD0: the coroutine task stack (0x4C2C resets it to its own address) */
     .task_slot = 0x10000038,
     .zips = ace_zips, .nzips = 2, .roms = ace_roms, .nroms = (int)(sizeof ace_roms / sizeof ace_roms[0]),
+    .select_addr = 0x10001D24, .select_vals = { 1 },   /* 1 from the transmission select through the class select, 0 in attract and the race */
     .log_file = "acedriver.log",                         /* A6-0x7FC8: the mode task's resume slot (0x4C36 / 0x4C48) */                       /* the master's busy-wait poll is not measured for this game yet */
 };
 const rr_game_t *g_rr_game = &ace;

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the WINDOWS versions of Prop Cycle, Rave Racer, Tokyo Wars, Dirt Dash, Time Crisis, Ace Driver and Cyber Sled, from Linux.
+# Build the WINDOWS versions of Prop Cycle, Rave Racer, Tokyo Wars, Dirt Dash, Armadillo Racing, Time Crisis, Ace Driver and Cyber Sled, from Linux.
 #
 #   ./build-windows.sh
 #
@@ -8,7 +8,7 @@
 # comes with Windows and the GPU driver), an empty roms/ folder and
 # HOW TO PLAY.txt -- plus windows-release.zip.
 # On Windows: put the MAME ROM sets in roms/ (propcycl.zip for Prop Cycle;
-# raverace.zip + namcoc74.zip for Rave Racer; tokyowar.zip for Tokyo Wars; dirtdash.zip for Dirt Dash; timecris.zip for Time Crisis; acedrive.zip + namcoc74.zip for Ace Driver; cybsled.zip + namcoc67.zip + namcoc68.zip for Cyber Sled) and
+# raverace.zip + namcoc74.zip for Rave Racer; tokyowar.zip for Tokyo Wars; dirtdash.zip for Dirt Dash; adillor.zip for Armadillo Racing; timecris.zip for Time Crisis; acedrive.zip + namcoc74.zip for Ace Driver; cybsled.zip + namcoc67.zip + namcoc68.zip for Cyber Sled) and
 # double-click the game. The
 # first start unpacks the ROMs into extracted/ beside it.
 #
@@ -96,6 +96,10 @@ cmake --build build-win/tw --target tw -j"${JOBS:-$(nproc)}"
 cmake -S dirtdash -B build-win/dd -DCMAKE_TOOLCHAIN_FILE="$TOP/build-win/toolchain.cmake" \
       -DCMAKE_BUILD_TYPE=Release >/dev/null
 cmake --build build-win/dd --target dd -j"${JOBS:-$(nproc)}"
+# Armadillo Racing (adillor/): the same again (gen/am_lifted_NN.c comes with the tree; the master DSP and sound programs are translated from adillor/extracted/)
+cmake -S adillor -B build-win/am -DCMAKE_TOOLCHAIN_FILE="$TOP/build-win/toolchain.cmake" \
+      -DCMAKE_BUILD_TYPE=Release >/dev/null
+cmake --build build-win/am --target am -j"${JOBS:-$(nproc)}"
 # Time Crisis (timecris/): the same again (gen/tc_lifted_NN.c comes with the tree; the master DSP and sound programs are translated from timecris/extracted/)
 cmake -S timecris -B build-win/tc -DCMAKE_TOOLCHAIN_FILE="$TOP/build-win/toolchain.cmake" \
       -DCMAKE_BUILD_TYPE=Release >/dev/null
@@ -128,16 +132,17 @@ cp build-win/cmake/propcycl.exe "$REL/PropCycle.exe"
 cp build-win/rr/rr.exe "$REL/RaveRacer.exe"
 cp build-win/tw/tw.exe "$REL/TokyoWars.exe"
 cp build-win/dd/dd.exe "$REL/DirtDash.exe"
+cp build-win/am/am.exe "$REL/ArmadilloRacing.exe"
 cp build-win/tc/tc.exe "$REL/TimeCrisis.exe"
 cp build-win/ad/ad.exe "$REL/AceDriver.exe"
 cp build-win/cc/cc.exe "$REL/CyberCommando.exe"
 cp build-win/cs/cs21.exe "$REL/CyberSled.exe"
 mkdir -p "$REL/mesa"
 cp "$MESA/opengl32.dll" "$MESA/libgallium_wgl.dll" "$REL/mesa/"
-x86_64-w64-mingw32-strip "$REL/PropCycle.exe" "$REL/RaveRacer.exe" "$REL/TokyoWars.exe" "$REL/DirtDash.exe" "$REL/TimeCrisis.exe" "$REL/AceDriver.exe" "$REL/CyberCommando.exe" "$REL/CyberSled.exe"
+x86_64-w64-mingw32-strip "$REL/PropCycle.exe" "$REL/RaveRacer.exe" "$REL/TokyoWars.exe" "$REL/DirtDash.exe" "$REL/ArmadilloRacing.exe" "$REL/TimeCrisis.exe" "$REL/AceDriver.exe" "$REL/CyberCommando.exe" "$REL/CyberSled.exe"
 # the .exe must need nothing beside it: every DLL it imports must ship with Windows
 # (OPENGL32.dll does -- it hands over to the installed GPU driver and is never bundled)
-for exe in PropCycle.exe RaveRacer.exe TokyoWars.exe DirtDash.exe TimeCrisis.exe AceDriver.exe CyberCommando.exe CyberSled.exe; do
+for exe in PropCycle.exe RaveRacer.exe TokyoWars.exe DirtDash.exe ArmadilloRacing.exe TimeCrisis.exe AceDriver.exe CyberCommando.exe CyberSled.exe; do
     bad=$(x86_64-w64-mingw32-objdump -p "$REL/$exe" | awk '/DLL Name/ {print $3}' |
           grep -viE '^(kernel32|user32|gdi32|opengl32|advapi32|shell32|ole32|oleaut32|imm32|setupapi|version|winmm|dinput8|ws2_32|api-ms-win-crt-.*)\.dll$' || true)
     [ -z "$bad" ] || { echo "$exe needs DLLs Windows does not ship: $bad"; exit 1; }

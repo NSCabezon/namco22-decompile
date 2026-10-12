@@ -2,8 +2,9 @@
  * tc2_input.c -- Time Crisis 2's cabinet on a keyboard, mouse, absolute-mouse light gun and pads: the copied input module (src/eng/ss22_input.c,
  * Time Crisis 1's light-gun support with it: the pointer / either stick / the arrow keys aim, the screen edge, R or a side button is
  * off-screen = reload, trigger and pedal on keys, mouse buttons and pad buttons, all rebindable on the menu's Controls page, the gun border
- * F8, the pad's rumble for the recoil) with TC2's controls (MAME's timecrs2 ports: JVS_PLAYER1 trigger / pedal / the operator's user
- * service up/down/enter, JVS_SYSTEM test, coin; the gun's X 91..824, Y 38..285).
+ * F8, the pad's rumble for the recoil) with the controls MAME's timecrs2 and crszone ports share (JVS_PLAYER1 trigger / pedal / the operator's
+ * user service up/down/enter, JVS_SYSTEM test, coin); the gun's range is the game's (include/tc2_game.h: TC2 X 91..824 Y 38..285, Crisis Zone
+ * X 0x40..0x33F Y 0x20..0xFF). Crisis Zone uses this file unchanged: same keys, mouse / absolute-mouse guns, pads, recoil.
  * What the cabinet reads goes through the I/O board (the H8/3334 JVS program, to be translated): tc2_inputs holds it until then.
  */
 #include <stdint.h>
@@ -12,7 +13,8 @@
 #include "eng/ss22_input.h"
 #include "eng/ss22_board.h"
 
-uint16_t g_ss22_gun_x = TC2_GUN_X0 + TC2_GUN_XW / 2, g_ss22_gun_y = TC2_GUN_Y0 + TC2_GUN_YH / 2;
+uint16_t g_ss22_gun_x, g_ss22_gun_y;           /* the game's port range (include/tc2_game.h): centred at start-up below */
+__attribute__((constructor)) static void gun_centre(void) { g_ss22_gun_x = (uint16_t)(TC2_GUN_X0 + TC2_GUN_XW / 2); g_ss22_gun_y = (uint16_t)(TC2_GUN_Y0 + TC2_GUN_YH / 2); }
 bool     g_ss22_gun_off;
 uint32_t g_ss22_wram_watch_off = ~0u;
 void (*g_ss22_wram_watch)(uint32_t v, int size);

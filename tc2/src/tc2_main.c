@@ -16,9 +16,10 @@
 #include "lift_rt.h"
 #include "tc2_lifted.h"
 #include "tc2_host.h"
+#include "tc2_game.h"
 #include "tc2_regmap.h"
 
-extern uint8_t tc2_ram[0x1000000], tc2_boot[0x400000];
+extern uint8_t tc2_ram[0x1000000], tc2_boot[0x800000];
 void tc2_io_flush(void);
 
 static uint64_t ins_total, ins_limit = 3000000;
@@ -53,7 +54,8 @@ static uint32_t load_regs(const char *path)
 
 #ifdef RR_TRACE
 static FILE *trace_f;
-void rr_trace_ins(uint32_t pc) { if (trace_f) fprintf(trace_f, "%08X\n", pc); }
+static unsigned trace_from;                   /* $TC2_TRACE_FROM: the first frame traced */
+void rr_trace_ins(uint32_t pc) { if (trace_f && rr_frame >= trace_from) fprintf(trace_f, "%08X\n", pc); }
 void tc2_trace_mark(const char *what, uint32_t v) { if (trace_f) fprintf(trace_f, "%s %08X\n", what, v); }
 #else
 void tc2_trace_mark(const char *what, uint32_t v) { (void)what; (void)v; }
@@ -61,6 +63,7 @@ void tc2_trace_mark(const char *what, uint32_t v) { (void)what; (void)v; }
 
 void tc2_on_exit(void)
 {
+    { void tc2_out_close(void); tc2_out_close(); }                  /* "mame_stop = 1" to the output listeners (src/tc2_out.c) */
 #ifdef RR_TRACE
     if (trace_f) fclose(trace_f);
 #endif
@@ -94,6 +97,16 @@ static void scripted_inputs(uint32_t frame)
         p += n ? n : 1; while (*p && *p != ',') p++; if (*p == ',') p++;
     }
     tc2_inputs = held;
+    /* $TC2_AIM = "x:y@frame,..." (fractions of the screen, 0..1): the gun aimed there from that frame on -- picks a ZONE SELECT entry headlessly */
+    static const char *aim; static int ainit;
+    if (!ainit) { ainit = 1; aim = getenv("TC2_AIM"); }
+    for (const char *p = aim; p && *p; ) {
+        float x, y; unsigned at; int n = 0;
+        if (sscanf(p, "%f:%f@%u%n", &x, &y, &at, &n) < 3) break;
+        if (frame >= at) { extern uint16_t g_ss22_gun_x, g_ss22_gun_y;
+            g_ss22_gun_x = (uint16_t)(tc2_game.gun_x0 + x * tc2_game.gun_xw); g_ss22_gun_y = (uint16_t)(tc2_game.gun_y0 + y * tc2_game.gun_yh); }
+        p += n ? n : 1; while (*p && *p != ',') p++; if (*p == ',') p++;
+    }
 }
 
 /* THE GPU GATE: $TC2_GPU_GATE=dir:every -- a hidden GL context in a headless run; every N frames the same built frame is drawn by the GPU
@@ -182,8 +195,10 @@ static void session_rec(uint32_t frame)
         const char *r = getenv("TC2_REPLAY");
         if (r) { rep = fopen(r, "r"); fprintf(stderr, rep ? "[REC] replaying %s\n" : "[REC] cannot read %s\n", r); }
         else { int tc2_window_active(void);
-               if (tc2_window_active()) { rename("tc2_last.rec", "tc2_prev.rec"); rec = fopen("tc2_last.rec", "w");
-                   if (rec) { fprintf(rec, "# TC2 session: F frame inputs gunx guny off\n"); fprintf(stderr, "[REC] recording the inputs to tc2_last.rec\n"); } } }
+               if (tc2_window_active()) {                  /* <tag>_last.rec / <tag>_prev.rec: tc2_..., crszone_... (the game table's tag) */
+                   char last[64], prev[64]; snprintf(last, sizeof last, "%s_last.rec", tc2_game.tag); snprintf(prev, sizeof prev, "%s_prev.rec", tc2_game.tag);
+                   rename(last, prev); rec = fopen(last, "w");
+                   if (rec) { fprintf(rec, "# TC2 session: F frame inputs gunx guny off\n"); fprintf(stderr, "[REC] recording the inputs to %s\n", last); } } }
     }
     if (rep) {
         for (;;) {
@@ -278,8 +293,8 @@ int main(int argc, char **argv)
         int tc2_rom_setup(const char *, const char *), tc2_rom_boot(const char *, uint8_t *);
         if (!tc2_rom_setup("extracted", exe_dir) || !tc2_rom_boot("extracted", tc2_boot)) {
             extern char tc2_rom_error[];                  /* a window run (a double-click): say it on screen, there may be no console */
-            if (!strcmp(argv[1], "--window")) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Time Crisis 2",
-                tc2_rom_error[0] ? tc2_rom_error : "Time Crisis 2 could not read its ROM files in extracted/ (see the log).", NULL);
+            if (!strcmp(argv[1], "--window")) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, tc2_game.title,
+                tc2_rom_error[0] ? tc2_rom_error : "The game could not read its ROM files in extracted/ (see the log).", NULL);
             return 1;
         }
     }
@@ -327,7 +342,8 @@ int main(int argc, char **argv)
      * earlier 0x8010 agreed on that bit (measured: the loop steps 32 bytes on MAME, 6 / 52 / 27 iterations against 12 / 102 / 53 with 16) */
     RS8(0x2080, 0x0002E270);
 #ifdef RR_TRACE
-    { const char *t = getenv("TC2_TRACE"); trace_f = fopen(t ? t : "tc2_trace.txt", "w"); }
+    { const char *t = getenv("TC2_TRACE"); trace_f = fopen(t ? t : "tc2_trace.txt", "w");
+      if ((t = getenv("TC2_TRACE_FROM"))) trace_from = (unsigned)atoi(t); }
 #endif
     rr_budget = TC2_SLICE;
     rr_pc = pc;
@@ -335,7 +351,7 @@ int main(int argc, char **argv)
      * point starts in the exception vector -- so the program resumes the way the CPU does, by taking it first */
     { void tc2_screen_reset(void), tc2_screen_at_vblank(void); if (power_on) tc2_screen_reset(); else tc2_screen_at_vblank(); }
     if (!power_on) {
-        void tc2_irq_line(uint32_t, int); tc2_irq_line(TC2_IP_VBLANK, 1);
+        tc2_irq_set(TC2_SRC_VBLANK, 1);
         tc2_poll_irq();
     }
     rr_jump(pc, pc);

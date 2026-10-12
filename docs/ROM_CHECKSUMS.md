@@ -173,6 +173,45 @@ MAME set: `dirtdash` (World, DT2 Ver.A, MAME's `dirtdasha`). Unpacked chips end 
 | `dt2vera.1` | 2097152 | `4fbb2b5ead26717087ac638e0d57aee1` | `402a3d73` |
 | `dt2vera.2` | 2097152 | `3ca9ef45fb4e0663b2d15040dcd7e9d2` | `66ed140d` |
 
+## Armadillo Racing
+
+MAME set: `adillor` (World, AM2 Ver.A). Unpacked chips end up in `adillor/extracted/`. 32 files.
+
+| File | Size | MD5 | CRC32 |
+|---|---:|---|---|
+| `am1ccrh.1d` | 524288 | `d5fb81ff68aaa52a0f166513347562e5` | `180c4a33` |
+| `am1ccrl.3d` | 2097152 | `87d65ff0dc9a35d6298b8ac65d772963` | `76c6d5f3` |
+| `am1cg0.8d` | 2097152 | `b30a6bf683580193efea0261c1e84e98` | `b91e4259` |
+| `am1cg1.10d` | 2097152 | `08680c23bc747ffdc34bf4f61ee4eb33` | `c1b82a26` |
+| `am1cg2.12d` | 2097152 | `272d10a0b5806be0f3e313e9580bbcf4` | `36a7d3fd` |
+| `am1cg3.13d` | 2097152 | `40804790e6d2e4b33ce114e864c1b1a5` | `8b0857ef` |
+| `am1cg4.14d` | 2097152 | `5ecf2aca39f50e11b07e430d639049b5` | `ebc516fe` |
+| `am1cg5.16d` | 2097152 | `cac82d9e363a41100a91599a7dbe888c` | `30fad30d` |
+| `am1cg6.18d` | 2097152 | `996ae3137a53ad521cc9cff0a0666c47` | `62eea883` |
+| `am1cg7.19d` | 2097152 | `8052e1b1cd1119af7480fa009fd98b6c` | `2d257f47` |
+| `am1data.8k` | 524288 | `9ade8ac0652121ccb654a26ab91903df` | `3c176589` |
+| `am1ptrl0.18k` | 524288 | `b2840e122e3d2ba7fdb901af0683bb6f` | `6fdb34f6` |
+| `am1ptrl1.16k` | 524288 | `73206053ab654e4d4e516956524d15d9` | `32e40601` |
+| `am1ptrl2.15k` | 524288 | `e1b113b7cbfaff8398a02d72bfe461af` | `e27e29cc` |
+| `am1ptrl3.14k` | 524288 | `8d963aa792ee7767e0d6e61e601c0c10` | `0c638e3e` |
+| `am1ptrm0.18j` | 524288 | `9b70e1239158890759da011477abe0a1` | `e676cd98` |
+| `am1ptrm1.16j` | 524288 | `46456fc5d785c52d3c58daace886ca44` | `eb115d9d` |
+| `am1ptrm2.15j` | 524288 | `eab9b487f9af71562a02a9ab612c7e07` | `86b4ed0c` |
+| `am1ptrm3.14j` | 524288 | `25afc759d29588bbfa13cd6473c9686b` | `97c1c6b0` |
+| `am1ptru0.18f` | 524288 | `b2ebec378bf6c028ca6d056afc0cb16f` | `6a3fd855` |
+| `am1ptru1.16f` | 524288 | `4c49be5098dad0710a14a6400b89e64f` | `551bf714` |
+| `am1ptru2.15f` | 524288 | `a10ab4d0ed3c31f589184dac8a670665` | `ce790635` |
+| `am1ptru3.14f` | 524288 | `555ed74e8fd7ac68147d01f0295b4383` | `5e4e6333` |
+| `am1scg0.12f` | 2097152 | `59b93f070b37ad5acd7fdb4058b71ac7` | `e576f993` |
+| `am1scg1.10f` | 2097152 | `134a7ec4ff103a0250b34432b3f2c415` | `d6d26cc1` |
+| `am1wavea.2l` | 4194304 | `02ce6e8a13c5710f64c10767aa24b883` | `48f8c20c` |
+| `am1waveb.1l` | 4194304 | `c3f297ef25831c08348e875cdbcbbf46` | `fd8e7384` |
+| `am2vera.rom1` | 1048576 | `191baf7c4cc78d895ecea10658253775` | `b974e931` |
+| `am2vera.rom2` | 1048576 | `3a462c35a83a032c1525ca829c64be80` | `c7cd78f1` |
+| `am2vera.rom3` | 1048576 | `516b4ee7ca8555af2185577f9948fabe` | `80e9435a` |
+| `am2vera.rom4` | 1048576 | `11607d78512e33da46c30f3d3763791b` | `1e3a6032` |
+| `c71.bin` | 8192 | `223914888d9be9ffe07952d9aa4c4107` | `47c623ab` |
+
 ## Time Crisis
 
 MAME set: `timecris` (World, TS2 Ver.B). Unpacked chips end up in `timecris/extracted/`. 31 files.

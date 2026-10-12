@@ -46,6 +46,7 @@ void ui_render_res(int *w, int *h);
 void ui_init(SDL_Window *win);
 void ui_shutdown(void);
 bool ui_is_open(void);
+bool ui_cancel_capture(void);   /* Escape while a key is being rebound: cancels it (true) instead of leaving the game */
 void ui_toggle(void);
 /* Nuklear buffers input between these two calls and only commits it at
  * ui_input_end(). Without the pair the context never settles: hover and

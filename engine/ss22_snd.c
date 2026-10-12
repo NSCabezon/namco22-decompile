@@ -371,6 +371,8 @@ void ss22_snd_trackball(int dx, int dy)
     tb_count[0] = (uint16_t)(tb_count[0] + dx);
     tb_count[1] = (uint16_t)(tb_count[1] + dy);
 }
+void ss22_snd_trackball_get(uint16_t *x, uint16_t *y) { *x = tb_count[0]; *y = tb_count[1]; }   /* --record / --replay (engine/ss22_run.c) */
+void ss22_snd_trackball_set(uint16_t x, uint16_t y) { tb_count[0] = x; tb_count[1] = y; }
 void ss22_snd_trackball_direct(bool on) { tb_natural = !on; }      /* the Controls page's Trackball orientation (MAME's DEV "Trackball Orientation") */
 static void tb_look(uint64_t t)
 {

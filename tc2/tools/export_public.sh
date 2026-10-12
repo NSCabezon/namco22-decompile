@@ -7,7 +7,7 @@ set -e
 DEST=${1:?usage: tools/export_public.sh DEST}
 cd "$(dirname "$0")/.."
 mkdir -p "$DEST"
-FILES=(CMakeLists.txt build.sh launch.sh build-windows.sh README.md LICENSE
+FILES=(CMakeLists.txt host.cmake build.sh launch.sh build-windows.sh README.md LICENSE
        tools/make_prog.py tools/setup_roms.py tools/export_public.sh tools/release.sh
        gen/tc2_lifted.h gen/tc2_lifted_tab.c)
 for f in gen/tc2_lifted_[0-9][0-9].c include/*.h src/*.c src/*.h src/eng/*.c src/eng/*.h third_party/* \

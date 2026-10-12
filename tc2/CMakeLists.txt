@@ -27,9 +27,8 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/gen/tc2_sub.c
 add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/gen/tc2_io.c
     COMMAND ${CMAKE_COMMAND} -E env H8_ROMSIZE=0x4000 python3 tools/h8/h8_translate.py io.bin 0 tc2io gen/tc2_io.c ${H8IO_PREFIX}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/io.bin ${H8_TOOLS} ${H8IO_COV} WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-set(TC2_SRC src/tc2_cpu.c src/tc2_mem.c src/tc2_ctl.c src/tc2_chips.c src/tc2_screen.c src/tc2_text.c src/tc2_window.c src/tc2_main.c
-    src/eng/eng_ui.c src/eng/eng_cfg.c src/eng/eng_display.c src/eng/ss22_input.c src/eng/eng_ffb.c src/tc2_input.c
-    src/tc2_c435.c src/tc2_render.c src/tc2_gl.c src/h8_periph.c src/tc2_h8.c src/tc2_audio.c src/tc2_rom.c src/tc2_out.c src/eng/romzip.c src/eng/c352.c gen/tc2_sub.c gen/tc2_io.c ${TC2_LIFTED})
+include(host.cmake)                             # the System 23 host, shared with ../crszone
+set(TC2_SRC ${TC2_HOST_SRC} src/tc2_game.c gen/tc2_sub.c gen/tc2_io.c ${TC2_LIFTED})
 # PORTABLE (default ON): pin glibc symbol versions so a binary built here runs on older systems -- the Steam Deck included
 option(PORTABLE "Bind glibc symbols to baseline versions (runs on glibc >= 2.34)" ON)
 if(PORTABLE AND NOT WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
@@ -58,7 +57,7 @@ else()
 endif()
 foreach(t ${TC2_TARGETS})
   add_executable(${t} ${TC2_SRC})
-  target_include_directories(${t} PRIVATE include gen src src/eng ${SDL2_INCLUDE_DIRS})
+  target_include_directories(${t} PRIVATE gen ${TC2_HOST_INCLUDE} ${SDL2_INCLUDE_DIRS})
   if(WIN32)
     target_link_libraries(${t} ${SDL2_STATIC_LDFLAGS} ZLIB::ZLIB Threads::Threads ${TC2_SYS_LIBS})
   else()

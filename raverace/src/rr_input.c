@@ -36,6 +36,12 @@ int g_cfg_fullscreen = 0, g_cfg_scale = 2, g_cfg_scaling = 0;
 int g_cfg_draw = 0;          /* draw distance level 0..3 (rr_host_set_draw) */
 int g_cfg_fps;                       /* Display > Frame rate: pictures a second, 0 = Auto, the default (engine/eng_vsync.h) */
 int g_cfg_winmode = -1, g_cfg_res_w = 640, g_cfg_res_h = 480, g_cfg_wide = 0, g_cfg_aspect = 1;   /* scaling: 0 smooth, 1 sharp, 2 integer */            /* free_play = 0|1 in rr_controls.cfg; -1 = not set */
+/* Stick steering (GitHub #42): a GAMEPAD stick's travel past the deadzone, t in 0..1, steers t^curve of the lock -- a curve keeps
+ * small corrections fine and still reaches full lock. The Super 22 games' row of the same name (engine/ss22_input.c). Level 0, Linear,
+ * the default, is the old straight line, so nothing changes until a player picks another. Wheels and raw joysticks are never curved. */
+const char *const g_stick_steer_name[RR_STICK_N] = { "Linear", "Medium", "Smooth", "Very smooth" };
+const double g_stick_steer_curve[RR_STICK_N] = { 1.0, 1.5, 2.0, 2.5 };
+int g_cfg_stick_steer = 0;               /* stick_steering = 0..3 in rr_controls.cfg */
 int g_pad_deadzone = 8000;          /* of 32767; a real Xbox One pad here rests at 3019 */
 char g_cfg_net_server[128] = "zonesync.net", g_cfg_net_name[24];   /* net_server / net_name in rr_controls.cfg (the Online page) */
 
@@ -114,6 +120,7 @@ void rr_input_load(const char *path)
         if (!strcmp(k, "steer_speed")) { g_steer_speed = atoi(v); continue; }
         if (!strcmp(k, "steer_return")) { g_steer_return = atoi(v); continue; }
         if (!strcmp(k, "pad_deadzone")) { g_pad_deadzone = atoi(v); continue; }
+        if (!strcmp(k, "stick_steering")) { int x = atoi(v); g_cfg_stick_steer = x < 0 || x >= RR_STICK_N ? 0 : x; continue; }
         if (!strcmp(k, "free_play")) { g_cfg_freeplay = atoi(v) ? 1 : 0; continue; }
         if (!strcmp(k, "ffb_strength")) { int x = atoi(v); g_cfg_ffb_strength = x < 0 ? 0 : x > 100 ? 100 : x; continue; }
         if (!strcmp(k, "ffb_invert")) { g_cfg_ffb_invert = atoi(v) ? 1 : 0; continue; }

@@ -9,6 +9,7 @@
 #   ./launch.sh tokyo        Tokyo Wars (add a number for the window size: tokyo 3)
 #   ./launch.sh dirt         Dirt Dash (add a number for the window size: dirt 3)
 #   ./launch.sh dirt jungle  Dirt Dash starting at a stage (city, jungle, hill, mountain, snow): the coins, stage and car are played for you
+#   ./launch.sh armadillo    Armadillo Racing (add a number for the window size: armadillo 2) -- the mouse is the trackball
 #   ./launch.sh tc           Time Crisis (add a number for the window size: tc 2) -- the mouse is the gun
 #   ./launch.sh ad           Ace Driver (add a number for the window size: ad 3)
 #   ./launch.sh cc           Cyber Commando (add a number for the window size: cc 3)
@@ -22,6 +23,8 @@
 #                   X / Z triggers, P pause, Esc menu (widescreen ...), F12 picture.
 # Dirt Dash keys:   5 coin (a game costs two), Z brake, X gas (throttle), C select (view change / confirm),
 #                   arrows/A D steer, Q / E shift down / up, M motion stop, P pause, Esc menu, F12 picture.
+# Armadillo Racing keys: the mouse is the trackball (captured while playing; Esc releases it), click / Enter start,
+#                   5 coin (a game costs four), arrows or the left stick roll the ball too, Esc menu, F2 test switch.
 # Time Crisis keys: the mouse aims, left button shoots, right button / Z is the foot pedal, 5 coin (a game costs three),
 #                   F2 test switch, F8 a white border for light guns, Esc menu.
 # Ace Driver keys:  5 coin (a game costs two), X gas, Z brake, arrow keys steer, A/S shift,
@@ -98,6 +101,17 @@ case "$game" in
         fi
         exec ./build/dd extracted "$@" ${stage:+--stage "$stage"}
         ;;
+    am|armadillo|adillor)
+        if [ ! -f adillor/build/CMakeCache.txt ]; then
+            echo "Armadillo Racing is not built yet. Run:  adillor/build.sh /path/to/adillor.zip"; exit 1
+        fi
+        rebuild adillor am
+        cd adillor
+        if [ $# -eq 0 ] || [[ "$1" =~ ^[0-9]+$ ]]; then
+            exec ./build/am extracted --window ${1:+"$1"}
+        fi
+        exec ./build/am extracted "$@"
+        ;;
     tc|timecris)
         if [ ! -f timecris/build/CMakeCache.txt ]; then
             echo "Time Crisis is not built yet. Run:  timecris/build.sh /path/to/timecris.zip"; exit 1
@@ -147,6 +161,6 @@ case "$game" in
         exec ./build/cs21 extracted "$@"
         ;;
     *)
-        sed -n '2,32p' "$0" | sed 's/^# \?//'
+        sed -n '2,35p' "$0" | sed 's/^# \?//'
         ;;
 esac

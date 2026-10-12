@@ -62,6 +62,8 @@ static void be_wr(uint8_t *m, uint32_t off, int size, uint32_t v)
     for (int i = size - 1; i >= 0; i--) { m[off + i] = (uint8_t)v; v >>= 8; }
 }
 
+extern uint8_t R[];                        /* engine/lift_cpu.c: the 68K register file, big-endian longs (D0 at 0, A0 at 0x20) */
+static uint32_t rd_reg(uint32_t o) { return (uint32_t)R[o] << 24 | (uint32_t)R[o + 1] << 16 | (uint32_t)R[o + 2] << 8 | R[o + 3]; }
 static void complain(const char *what, uint32_t a, int size)
 {
     static uint32_t seen[256]; static int nseen;
@@ -72,6 +74,12 @@ static void complain(const char *what, uint32_t a, int size)
     { extern uint32_t g_ss22_last_pc; fprintf(stderr, "[%sMEM] %s %d-byte access at 0x%06X (after the instruction at 0x%06X)\n", cfg->tag, what, size, a, g_ss22_last_pc); }
 #else
     fprintf(stderr, "[%sMEM] %s %d-byte access at 0x%06X\n", cfg->tag, what, size, a);
+    { extern void rr_dump_shadow(void); rr_dump_shadow(); }  /* no instruction trace in a player's build: the lifted calls' return addresses name the routine */
+    fprintf(stderr, "  68K regs: D");
+    for (int r = 0; r < 8; r++) fprintf(stderr, " %08X", rd_reg((uint32_t)r * 4));
+    fprintf(stderr, "  A");
+    for (int r = 0; r < 8; r++) fprintf(stderr, " %08X", rd_reg(0x20 + (uint32_t)r * 4));
+    fprintf(stderr, "\n");
 #endif
 }
 
@@ -238,6 +246,15 @@ static void eeprom_write(uint32_t off, int size, uint32_t v)
 uint32_t rr_read(uint32_t a, int size)
 {
     a &= 0xFFFFFFu;
+    /* THE 24-BIT WRAP: the 68EC020 drives 24 address lines, and an access running past 0xFFFFFF continues at 0 (MAME: the long is split into
+     * aligned pieces and the second lands at address 0). Armadillo Racing relies on it: ROM 0x1A59AE `move.l $ffff.w,(a3)+` (an absolute SHORT,
+     * i.e. address 0xFFFFFFFF, where #$ffff was surely meant) ends a display list with byte 0xFFFFFF (unmapped, 0) + ROM bytes 0..2 = 0x0000E200.
+     * Read as one unmapped long it was 0, and the master DSP took that list end into its data tables and stopped (0x5737, 0x3B55). */
+    if (size > 1 && a + (uint32_t)size > 0x1000000u) {
+        uint32_t v = 0;
+        for (int i = 0; i < size; i++) v = v << 8 | rr_read((a + (uint32_t)i) & 0xFFFFFFu, 1);
+        return v;
+    }
     if (a + (uint32_t)size <= SS22_ROM_SIZE) return be_rd(g_ss22.rom, a, size);
     if (a >= 0xE00000u) {
         if (a - 0xE00000u + (uint32_t)size <= SS22_WRAM_SIZE) return be_rd(g_ss22.wram, a - 0xE00000u, size);
@@ -292,6 +309,10 @@ static void watch(uint32_t a, int size, uint32_t v)
 void rr_write(uint32_t a, int size, uint32_t v)
 {
     a &= 0xFFFFFFu;
+    if (size > 1 && a + (uint32_t)size > 0x1000000u) {             /* the 24-bit wrap, as rr_read */
+        for (int i = 0; i < size; i++) rr_write((a + (uint32_t)i) & 0xFFFFFFu, 1, v >> (8 * (size - 1 - i)) & 0xFF);
+        return;
+    }
 #ifdef RR_TRACE
     watch(a, size, v);
 #endif

@@ -128,6 +128,21 @@ there). If a chip is in the zip but cannot be used, the message says why: the wr
 (a different or damaged dump), a damaged zip, or a compression method other than Deflate or
 Store (re-zip it). Compare your files with [ROM_CHECKSUMS.md](ROM_CHECKSUMS.md).
 
+
+## Armadillo Racing
+
+Armadillo Racing needs one MAME set: `adillor.zip` (World, AM2 Ver.A). Give it
+to the build:
+
+```bash
+adillor/build.sh /path/to/adillor.zip
+```
+
+or put it in the game's `roms` folder (the packages and the Windows `.exe` unpack it the first time
+the game starts). The chips are found by their CRC32, so a zip that names a chip differently still
+works. Unpacked chips land in `adillor/extracted/`; the 68EC020 program is the four byte-lane chips
+`am2vera.rom1`..`rom4`.
+
 ## Ace Driver
 
 Ace Driver needs two MAME sets: `acedrive.zip` (Ace Driver: Racing Evolution, World AD2) and `namcoc74.zip` (the sound CPU's BIOS,

@@ -10,7 +10,7 @@
  *              line of the clip data (whose third line gives the viewport size), 0x0000 / 0x0002 / 0x000A an immediate polygon
  *     0x8___   RENDER a model: point-ROM model id, its matrix and vector -> one entry of the render list (a header of 0x8000-family
  *              with model 0 raises the C435 interrupt instead)
- *     0xC___   flush
+ *     0xC___   flush: bit 13 raises / clears the C451 interrupt (Evolution 2)
  * DIRECT quads (already in screen space: x, y about the centre, u, v, a 1/z mantissa / exponent, shade per corner) -- 28 words, through the CTL
  * (0x0D00000C, one at a time; a header with bit 15 set is dropped) or the direct buffer (0x0CC00002 opens it, 0x0CC00000 takes a dummy word
  * then the 28) -- MAME's ctl_direct_poly_w / direct_buf_w
@@ -21,11 +21,14 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include "lift_rt.h"
+#include "tc2_host.h"
 #include "tc2_c435.h"
+#include "tc2_game.h"
 
 uint32_t rr_read(uint32_t a, int size);
-void tc2_irq_line(uint32_t bit, int on);
-#define IP_C435 0x1000u
+void tc2_irq_set(int src, int on);
 
 static struct {
     uint16_t buffer[256]; int pos;
@@ -159,7 +162,7 @@ static void state_set(uint16_t type, const uint16_t *p, uint16_t header)
 {
     switch (type) {
     case 0x0000: case 0x0002: case 0x000A: immediate(type, p, header); break;
-    case 0x0001: tc2_irq_line(IP_C435, p[0] & 1); break;
+    case 0x0001: tc2_irq_set(TC2_SRC_C435, p[0] & 1); break;
     case 0x0046: {
         const uint32_t d = L(p, 7);
         vp_offset_x = (int16_t)((int16_t)((d & 0xFFF) << 4) >> 4);
@@ -182,7 +185,7 @@ static void render_model(void)                    /* 8: a model of the point ROM
 {
     const uint16_t *b = c435.buffer;
     const int size = b[0] & 0xF;
-    if (b[1] == 0) { tc2_irq_line(IP_C435, 1); return; }
+    if (b[1] == 0) { tc2_irq_set(TC2_SRC_C435, 1); return; }
     tc2_render_entry *e = new_entry(TC2_RE_MODEL);
     if (!e) return;
     e->model = b[1];
@@ -230,7 +233,12 @@ void tc2_c435_pio(uint16_t w)
         }
         break;
     case 0x8000: render_model(); break;
-    case 0xC000: break;                           /* flush: the C451 interrupt, not wired on System 23 */
+    case 0xC000:                                  /* FLUSH (MAME c435_flush): with a zero length, header bit 13 raises the C451 interrupt, clear lowers it.
+                                                   * Wired on Evolution 2 (IRQ3, status 0x100000B0 bit 0); on System 23 the game table maps it to no pin */
+        if ((h & 0xF) == 0) tc2_irq_set(TC2_SRC_C451, (h >> 13) & 1);
+        { static int lg = -1; if (lg < 0) lg = getenv("TC2_FLUSHLOG") != NULL;   /* $TC2_FLUSHLOG: every C435 flush, with the list size so far */
+          if (lg) fprintf(stderr, "[FLUSH] frame %u h %04X list %d\n", rr_frame, h, tc2_render[tc2_render_cur].count); }
+        break;
     }
     if (!known) tc2_c435_unknown++;
     c435.pos = 0;
@@ -252,10 +260,26 @@ static void direct_entry(void)
     memcpy(e->d, direct_buf, sizeof e->d);
     e->vp_size_x = 320; e->vp_size_y = 240; e->vp_offset_x = 0; e->vp_offset_y = 0; e->vp_fov = 320.f;
 }
+/* the command DMA from main RAM (MAME c435_dma): the length is the game's; a garbage one must not hang the frame -- main RAM is 16 MB */
+static void dma(void)
+{
+    for (uint32_t pos = 0; pos < c435.size && pos < 0x1000000u; pos += 2) tc2_c435_pio((uint16_t)rr_read((c435.address & 0x1FFFFFFFu) + pos, 2));
+}
+/* EVOLUTION 2's C450 (MAME crszone_state::c450_dma_*): the same DMA into the C435, started by writing the SIZE, and it interrupts when done
+ * (the C450 source; 0x1040001C reads it, the IRQ status register 0x100000B4 acknowledges it). Raw 29-bit addresses: src/tc2_mem.c calls
+ * this before folding the Evolution 2 map onto System 23's. */
+int tc2_c450_write(uint32_t p, uint32_t v)
+{
+    if (p == 0x10400000u) { c435.address = v; return 1; }
+    if (p == 0x1040000Cu) { c435.size = v; dma(); tc2_irq_set(TC2_SRC_C450, 1); return 1; }
+    return 0;
+}
+
 int tc2_c435_write(uint32_t p, int size, uint32_t v)
 {
     switch (p) {
     case 0x0D00000Cu:                                    /* MAME ctl_direct_poly_w */
+        { static int lg = -1; if (lg < 0) lg = getenv("TC2_DIRECTLOG") != NULL; if (lg) fprintf(stderr, "[DIRECT] frame %u CTL %04X\n", rr_frame, (unsigned)v); }
         direct_buf[direct_pos++] = (uint16_t)v;
         if (v & 0xFFFF) direct_nonempty = 1;
         if (direct_pos >= 28) {
@@ -263,8 +287,10 @@ int tc2_c435_write(uint32_t p, int size, uint32_t v)
             direct_nonempty = 0; direct_pos = 0;
         }
         return 1;
-    case 0x0CC00002u: direct_open = (v & 0xFFFF) != 0; direct_pos = 0; return 1;
+    case 0x0CC00002u: if (tc2_game.no_direct_buf) return 1; direct_open = (v & 0xFFFF) != 0; direct_pos = 0; return 1;
     case 0x0CC00000u:
+        if (tc2_game.no_direct_buf) return 1;
+        { static int lg = -1; if (lg < 0) lg = getenv("TC2_DIRECTLOG") != NULL; if (lg) fprintf(stderr, "[DIRECT] frame %u BUF %04X open %d\n", rr_frame, (unsigned)v, direct_open); }
         if (!direct_open) return 1;
         if (direct_pos == 0) { direct_pos++; return 1; }
         direct_buf[direct_pos - 1] = (uint16_t)v; direct_pos++; direct_nonempty = 1;
@@ -272,10 +298,7 @@ int tc2_c435_write(uint32_t p, int size, uint32_t v)
         return 1;
     case 0x0100001Cu: c435.address = v; return 1;
     case 0x01000020u: c435.size = v; return 1;
-    case 0x01000024u:
-        /* the length is the game's; a garbage one must not hang the frame -- main RAM is 16 MB */
-        if (v & 1) for (uint32_t pos = 0; pos < c435.size && pos < 0x1000000u; pos += 2) tc2_c435_pio((uint16_t)rr_read((c435.address & 0x1FFFFFFFu) + pos, 2));
-        return 1;
+    case 0x01000024u: if (v & 1) dma(); return 1;
     case 0x01000060u: c435.pos = 0; return 1;
     case 0x02000000u: if (size == 2) { tc2_c435_pio((uint16_t)v); return 1; } return 0;
     case 0x0C800010u: c435.state_pos = 0; return 1;

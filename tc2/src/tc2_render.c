@@ -23,6 +23,7 @@
 #include "tc2_c435.h"
 #include "tc2_frame.h"
 #include "tc2_build.h"
+#include "tc2_game.h"
 
 uint8_t *tc2_vram_ptr(uint32_t p);
 void tc2_text_scroll(uint16_t linexscroll[1024], uint16_t *yscroll);
@@ -45,24 +46,22 @@ static int load(const char *dir, const char *name, uint8_t *dst, size_t n)
 }
 void tc2_render_init(const char *dir)
 {
-    static const char *pt[3][2] = { { "tss1pt0h.7a", "tss1pt0l.7c" }, { "tss1pt1h.5a", "tss1pt1l.5c" }, { "tss1pt2h.4a", "tss1pt2l.4c" } };
     ptrom_limit = 0x800000; ptrom = calloc(ptrom_limit + 256, 4);   /* + a pad: a polygon's vertex words are read after the per-polygon limit check */
     uint8_t *h = malloc(0x400000), *l = malloc(0x400000);
     int ok = 1;
-    for (int c = 0; c < 3; c++) {
+    for (int c = 0; c < tc2_game.npt; c++) {         /* the game's point ROM chip pairs (include/tc2_game.h): 3 on Time Crisis 2, 4 on Crisis Zone */
         /* MAME ROM_LOAD32_WORD_SWAP into a big-endian 32-bit region: the "h" chip's 16-bit words are the high halves, byte-swapped */
-        ok &= load(dir, pt[c][0], h, 0x400000) & load(dir, pt[c][1], l, 0x400000);
+        ok &= load(dir, tc2_game.pt_rom[c][0], h, 0x400000) & load(dir, tc2_game.pt_rom[c][1], l, 0x400000);
         for (uint32_t k = 0; k < 0x200000; k++)
             ptrom[c * 0x200000 + k] = (uint32_t)(h[2 * k + 1] << 8 | h[2 * k]) << 16 | (uint32_t)(l[2 * k + 1] << 8 | l[2 * k]);
     }
     free(h); free(l);
     tmlrom = malloc(0x400000); tmhrom = malloc(0x200000); texrom = malloc(0x2000000);
     uint8_t *raw = (uint8_t *)tmlrom;
-    ok &= load(dir, "tss1ccrl.7f", raw, 0x400000);
+    ok &= load(dir, tc2_game.ccrl, raw, 0x400000);
     for (uint32_t k = 0; k < 0x200000; k++) tmlrom[k] = (uint16_t)(raw[2 * k] | raw[2 * k + 1] << 8);   /* ROM_REGION16_LE */
-    ok &= load(dir, "tss1ccrh.7e", tmhrom, 0x200000);
-    static const char *cg[4] = { "tss1cgll.4m", "tss1cglm.4k", "tss1cgum.4j", "tss1cguu.4f" };
-    for (int c = 0; c < 4; c++) ok &= load(dir, cg[c], texrom + c * 0x800000, 0x800000);
+    ok &= load(dir, tc2_game.ccrh, tmhrom, 0x200000);
+    for (int c = 0; c < 4; c++) ok &= load(dir, tc2_game.cg[c], texrom + c * 0x800000, 0x800000);
     tm_decoded = malloc(4u * (tileid_mask | 0xFF) + 4); tattr_decoded = malloc((tileid_mask | 0xFF) + 1);
     for (uint32_t id = 0; id <= (tileid_mask | 0xFF); id++) {
         uint8_t a = tmhrom[id >> 1]; a = (id & 1) ? (a & 15) : (a >> 4);
@@ -333,7 +332,7 @@ static int near_pass;                                   /* 1: span() only record
 static float depth_keep = 0.98f;                       /* a pixel is hidden only if the other object is nearer by more than this margin ($TC2_DEPTH_TOL, percent) */
 int tc2_depth_on(void)                                   /* the setting (Display > Depth; $TC2_DEPTH=0/1 for tests), shared with src/tc2_gl.c */
 {
-    if (tc2_depth_mode < 0) { const char *e = getenv("TC2_DEPTH"); tc2_depth_mode = e ? *e == '1' : 1;
+    if (tc2_depth_mode < 0) { const char *e = getenv("TC2_DEPTH"); tc2_depth_mode = e ? *e == '1' : tc2_game.depth_default;
                               e = getenv("TC2_DEPTH_TOL"); if (e) depth_keep = 1.0f - (float)atof(e) / 100.0f; }
     return tc2_depth_mode;
 }
@@ -621,6 +620,30 @@ static void wait_idle(void) { pthread_mutex_lock(&mu); while (busy) pthread_cond
 
 /* at the start of vertical blank (MAME's screen_update): the other list is drawn, then the lists swap and the drawn one is emptied for the
  * C435 to fill (MAME render_run) */
+/* THE PLAYER'S PICTURE ADJUSTMENTS (Display > Arcade gamma / Gamma / Brightness, saved as pic_c404 / pic_gamma / pic_bright in the game's cfg),
+ * folded into the final per-channel table both renderers apply last (the GPU's LUT pass, the software one) -- so no shader changes and the
+ * same picture either way:  out = clamp(255 * (mix / 255) ^ (1 / gamma) * brightness)  with  mix = i + (C404 table - i) * arcade%.
+ * Arcade gamma 100% = the C404 table as the board writes it (our default; MAME applies none = 0%). Defaults leave the table untouched. */
+int tc2_pic_c404 = 100, tc2_pic_gamma = 100, tc2_pic_bright = 100;      /* %, gamma x 100, % */
+static void picture_adjust(uint8_t g[3][256])
+{
+    { static int env = -1; if (env < 0) { const char *e = getenv("TC2_PIC"); env = e != NULL;   /* tests: $TC2_PIC=arcade%,gamma*100,brightness% */
+        if (e) sscanf(e, "%d,%d,%d", &tc2_pic_c404, &tc2_pic_gamma, &tc2_pic_bright); } }
+    if (tc2_pic_c404 == 100 && tc2_pic_gamma == 100 && tc2_pic_bright == 100) return;
+    const double ge = 100.0 / tc2_pic_gamma, br = tc2_pic_bright / 100.0;
+    for (int ch = 0; ch < 3; ch++) for (int i = 0; i < 256; i++) {
+        const double mix = i + (g[ch][i] - i) * tc2_pic_c404 / 100.0;
+        double v = 255.0 * pow(mix / 255.0, ge) * br;
+        g[ch][i] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v + 0.5);
+    }
+}
+void tc2_picture_load(void)
+{
+    int eng_cfg_int(const char *, int);
+    tc2_pic_c404 = eng_cfg_int("pic_c404", 100);   if (tc2_pic_c404 < 0) tc2_pic_c404 = 0;     if (tc2_pic_c404 > 100) tc2_pic_c404 = 100;
+    tc2_pic_gamma = eng_cfg_int("pic_gamma", 100); if (tc2_pic_gamma < 50) tc2_pic_gamma = 50;  if (tc2_pic_gamma > 200) tc2_pic_gamma = 200;
+    tc2_pic_bright = eng_cfg_int("pic_bright", 100); if (tc2_pic_bright < 50) tc2_pic_bright = 50; if (tc2_pic_bright > 150) tc2_pic_bright = 150;
+}
 void tc2_render_frame_end(void)
 {
     if (!started) { started = 1; B[0] = calloc(1, sizeof *B[0]); B[1] = calloc(1, sizeof *B[1]); pthread_create(&worker, NULL, work, NULL); }
@@ -631,7 +654,8 @@ void tc2_render_frame_end(void)
     { static int on = -1; if (on < 0) { const char *e = getenv("TC2_GAMMA"); on = !(e && *e == '0'); }   /* TC2_GAMMA=0: as MAME (no gamma) */
       for (int ch = 0; ch < 3; ch++) for (int i = 0; i < 256; i++) snap->gamma[ch][i] = on ? c4[0x200 + 0x200 * ch + 2 * i + 1] : (uint8_t)i;
       int blank = 1; for (int i = 1; i < 256 && blank; i++) blank = !snap->gamma[0][i];
-      if (blank) for (int ch = 0; ch < 3; ch++) for (int i = 0; i < 256; i++) snap->gamma[ch][i] = (uint8_t)i; }   /* before the game loads it */
+      if (blank) for (int ch = 0; ch < 3; ch++) for (int i = 0; i < 256; i++) snap->gamma[ch][i] = (uint8_t)i;   /* before the game loads it */
+      picture_adjust(snap->gamma); }
     { static long at = -2; static unsigned long fn; fn++;          /* $TC2_C404RAM=frame: the whole 0x800-byte C404 block once */
       if (at == -2) { const char *e = getenv("TC2_C404RAM"); at = e ? atol(e) : -1; }
       if (at > 0 && (long)fn == at) { FILE *f = fopen("work/c404ram.bin", "wb"); if (f) { fwrite(c4, 1, 0x800, f); fclose(f); fprintf(stderr, "[C404] frame %lu -> work/c404ram.bin\n", fn); } } }
@@ -643,6 +667,8 @@ void tc2_render_frame_end(void)
     snap->list.count = l->count;
     memcpy(snap->list.e, l->e, sizeof l->e[0] * (size_t)l->count);
     tc2_render_entries += (unsigned long)l->count;
+    { static int lg = -1; if (lg < 0) lg = getenv("TC2_RLLOG") != NULL;   /* $TC2_RLLOG: the render list drawn each frame (entries) */
+      if (lg) fprintf(stderr, "[RL] frame %lu entries %d\n", tc2_render_frames, l->count); }
     tc2_render_frames++;
     tc2_render_cur = !tc2_render_cur;
     tc2_render[tc2_render_cur].count = 0;

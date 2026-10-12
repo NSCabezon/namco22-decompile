@@ -53,6 +53,7 @@ rm -rf "$REL" "$TOP/windows-release.zip"; mkdir -p "$REL/roms"
 cp build-win/tc2/tc2.exe "$REL/TimeCrisis2.exe"
 x86_64-w64-mingw32-strip "$REL/TimeCrisis2.exe"
 [ -d packaging/windows ] && cp -r packaging/windows/. "$REL/"
+[ -d packaging/hotr ] && mkdir -p "$REL/hotr" && cp packaging/hotr/* "$REL/hotr/"     # Hook of the Reaper game files (GitHub #48)
 [ -f LICENSE ] && cp LICENSE "$REL/LICENSE.txt"
 bad=$(x86_64-w64-mingw32-objdump -p "$REL/TimeCrisis2.exe" | awk '/DLL Name/ {print $3}' |
       grep -viE '^(kernel32|user32|gdi32|opengl32|advapi32|shell32|ole32|oleaut32|imm32|setupapi|version|winmm|dinput8|ws2_32|api-ms-win-crt-.*)\.dll$' || true)

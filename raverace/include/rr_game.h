@@ -56,6 +56,12 @@ typedef struct {
     const struct rr_bind_default { int act; const char *keys, *pad; } *bind_defaults;   /* default keys / pad button replacing the
                                              * driving defaults for these actions (keys: SDL names, comma-separated; pad NULL = none) */
     int nbind_defaults;
+    /* THE SELECTION SCREENS (GitHub #35): the game picks AT/MT, a course or a class by where the WHEEL sits, so a self-centring control
+     * (keys, D-pad, a thumbstick) fell back to the centre option the moment it was let go -- "the cursor drifts left". While the
+     * 16-bit work-RAM word `select_addr` holds one of `select_vals` (0 ends the list) keys and sticks MOVE the wheel and it stays
+     * where it is left; a real wheel stays absolute. select_addr 0 = never (the old behaviour). Found by diffing work-RAM dumps of
+     * the select screens against attract and the race. */
+    uint32_t select_addr; uint16_t select_vals[4];
 } rr_game_t;
 
 extern const rr_game_t *g_rr_game;

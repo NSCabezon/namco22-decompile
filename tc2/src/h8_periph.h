@@ -56,7 +56,7 @@ typedef struct h8p {
     uint8_t stcr;
     h8p_sci sci[2];
     /* A/D */
-    uint8_t adcsr, adcr; uint16_t addr[4]; int64_t adc_done;
+    uint8_t adcsr, adcr; uint16_t addr[4]; int64_t adc_done; int adtrg;   /* adtrg: the ADTRG pin level (idle high) */
     /* watchdog */
     uint8_t wd_tcsr, wd_tcnt;
     uint8_t reg[256];                           /* every other register: kept as written */
@@ -69,6 +69,7 @@ int64_t  h8p_next_event(h8p *p);                 /* states from now to the next 
 int      h8p_irq(h8p *p, int *set_ui);           /* the vector to take now (CCR permitting), or -1 */
 void     h8p_irq_taken(h8p *p, int vector);      /* an edge IRQ's ISR bit clears when it is taken */
 void     h8p_set_irq_pin(h8p *p, int n, int asserted);
+void     h8p_adtrg(h8p *p, int level);   /* the ADTRG pin (System 23: vblank) */
 int      h8p_owns(const h8p *p, uint32_t a);     /* a register address of this chip */
 uint8_t  h8p_read(h8p *p, uint32_t a);
 void     h8p_write(h8p *p, uint32_t a, uint8_t v);

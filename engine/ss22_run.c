@@ -105,21 +105,26 @@ static void add_press(const char *spec)
  * the same EEPROM, so a headless run (any build: the oracles with SND_COV, the trace build) re-plays the session instruction for instruction:
  * the tool for "it crashed in stage 2" when no script reaches stage 2. */
 static FILE *rec_f, *rep_f;
-static struct { uint32_t f; unsigned p, w, p1, p2, gx, gy, goff; } rep_ev; static int rep_have;
-static unsigned rec_last[7] = { ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u };
+/* Version 2 adds the trackball's two free-running counters (Armadillo Racing: the mouse IS the game's steering, and a recording without
+ * it replayed a race nobody drove). A version 1 file (8 fields a line) still replays. */
+static struct { uint32_t f; unsigned p, w, p1, p2, gx, gy, goff, tx, ty; int has_tb; } rep_ev; static int rep_have;
+void ss22_snd_trackball_get(uint16_t *x, uint16_t *y);
+void ss22_snd_trackball_set(uint16_t x, uint16_t y);
+static unsigned rec_last[9] = { ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u };
 static void rec_hook(uint16_t p, unsigned w, unsigned p1, unsigned p2)
 {
-    const unsigned v[7] = { p, w, p1, p2, g_ss22_gun_x, g_ss22_gun_y, g_ss22_gun_off };
+    uint16_t tx, ty; ss22_snd_trackball_get(&tx, &ty);
+    const unsigned v[9] = { p, w, p1, p2, g_ss22_gun_x, g_ss22_gun_y, g_ss22_gun_off, tx, ty };
     if (!memcmp(v, rec_last, sizeof v)) return;
     memcpy(rec_last, v, sizeof v);
-    fprintf(rec_f, "%u %X %X %X %X %X %X %X\n", rr_frame, v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
+    fprintf(rec_f, "%u %X %X %X %X %X %X %X %X %X\n", rr_frame, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]);
     fflush(rec_f);                                     /* a crash still leaves the inputs up to it on disk (_IOLBF is full buffering on Windows) */
 }
 static void rec_open(const char *path)
 {
     rec_f = fopen(path, "w");
     if (!rec_f) { fprintf(stderr, "[%s] cannot write %s\n", g_ss22_game->tag, path); return; }
-    fprintf(rec_f, "SS22REC 1 %s ", g_ss22_game->tag);
+    fprintf(rec_f, "SS22REC 2 %s ", g_ss22_game->tag);
     for (unsigned i = 0; i < SS22_EEPROM_SIZE; i++) fprintf(rec_f, "%02X", g_ss22.eeprom[i]);
     fprintf(rec_f, "\n");
     fflush(rec_f);
@@ -142,12 +147,22 @@ static void on_fatal(const char *why)
              g_ss22_game->name, why, g_ss22_game->logname, fatal_rec ? " and " : "", fatal_rec ? fatal_rec : "");
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, g_ss22_game->name, msg, NULL);
 }
-static void rep_read(void) { rep_have = rep_f && fscanf(rep_f, "%u %X %X %X %X %X %X %X", &rep_ev.f, &rep_ev.p, &rep_ev.w, &rep_ev.p1, &rep_ev.p2, &rep_ev.gx, &rep_ev.gy, &rep_ev.goff) == 8; }
+static void rep_read(void)
+{
+    char line[256];
+    rep_have = 0;
+    while (rep_f && fgets(line, sizeof line, rep_f)) {
+        const int n = sscanf(line, "%u %X %X %X %X %X %X %X %X %X", &rep_ev.f, &rep_ev.p, &rep_ev.w, &rep_ev.p1, &rep_ev.p2, &rep_ev.gx, &rep_ev.gy,
+                             &rep_ev.goff, &rep_ev.tx, &rep_ev.ty);
+        if (n < 8) continue;                             /* the rest of the header line, a blank line */
+        rep_ev.has_tb = n == 10; rep_have = 1; return;
+    }
+}
 static bool rep_open(const char *path)
 {
     rep_f = fopen(path, "r");
     char tag[32]; int ver;
-    if (!rep_f || fscanf(rep_f, "SS22REC %d %31s ", &ver, tag) != 2 || strcmp(tag, g_ss22_game->tag)) { fprintf(stderr, "[%s] %s is not a %s recording\n", g_ss22_game->tag, path, g_ss22_game->tag); return false; }
+    if (!rep_f || fscanf(rep_f, "SS22REC %d %31s ", &ver, tag) != 2 || ver < 1 || ver > 2 || strcmp(tag, g_ss22_game->tag)) { fprintf(stderr, "[%s] %s is not a %s recording\n", g_ss22_game->tag, path, g_ss22_game->tag); return false; }
     for (unsigned i = 0; i < SS22_EEPROM_SIZE; i++) { unsigned b; if (fscanf(rep_f, "%2X", &b) != 1) return false; g_ss22.eeprom[i] = (uint8_t)b; }
     rep_read();
     fprintf(stderr, "[%s] replaying %s (EEPROM from the recording)\n", g_ss22_game->tag, path);
@@ -165,6 +180,7 @@ static void update_inputs(void)
     if (rep_f) {                                         /* --replay: the recorded values, at the recorded frames */
         while (rep_have && rep_ev.f <= rr_frame) {
             g_ss22_gun_x = (uint16_t)rep_ev.gx; g_ss22_gun_y = (uint16_t)rep_ev.gy; g_ss22_gun_off = rep_ev.goff != 0;
+            if (rep_ev.has_tb) ss22_snd_trackball_set((uint16_t)rep_ev.tx, (uint16_t)rep_ev.ty);
             ss22_snd_inputs((uint16_t)rep_ev.p, rep_ev.w, rep_ev.p1, rep_ev.p2);
             rep_read();
         }

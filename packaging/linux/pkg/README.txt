@@ -1,6 +1,6 @@
-Namco 2x Systems: Prop Cycle, Rave Racer, Tokyo Wars, Dirt Dash, Time Crisis, Ace Driver, Cyber Commando, Cyber Sled and Time Crisis 2
+Namco 2x Systems: Prop Cycle, Rave Racer, Tokyo Wars, Dirt Dash, Armadillo Racing, Time Crisis, Ace Driver, Cyber Commando, Cyber Sled and Time Crisis 2
 -- decompiled engines for the Namco System 21 / 22 / 23 arcade games
-(Cyber Sled runs on Namco System 21, Time Crisis 2 on System 23; the other seven on System 22 / Super System 22)
+(Cyber Sled runs on Namco System 21, Time Crisis 2 on System 23; the other eight on System 22 / Super System 22)
 =============================================================================================================================
 
 WHERE THE ROMS GO  (do this after installing)
@@ -13,6 +13,7 @@ YOUR home folder at exactly these paths:
                 ~/.local/share/namco-2x-systems/raverace/roms/namcoc74.zip
   Tokyo Wars:   ~/.local/share/namco-2x-systems/tokyowar/roms/tokyowar.zip
   Dirt Dash:    ~/.local/share/namco-2x-systems/dirtdash/roms/dirtdash.zip  (+ dirtdasha.zip if your MAME set has one)
+  Armadillo Racing: ~/.local/share/namco-2x-systems/adillor/roms/adillor.zip
   Time Crisis:  ~/.local/share/namco-2x-systems/timecris/roms/timecris.zip
   Ace Driver:   ~/.local/share/namco-2x-systems/acedriver/roms/acedrive.zip
                 ~/.local/share/namco-2x-systems/acedriver/roms/namcoc74.zip
@@ -31,11 +32,12 @@ folder, tells you what is missing and opens the folder; copy the zip(s) in and
 start it again. Zips already in ~/Downloads are picked up automatically.
 (~/.local is a hidden folder: in a file manager press Ctrl+H to see it.)
 From a terminal:
-  mkdir -p ~/.local/share/namco-2x-systems/propcycle/roms ~/.local/share/namco-2x-systems/raverace/roms ~/.local/share/namco-2x-systems/tokyowar/roms ~/.local/share/namco-2x-systems/dirtdash/roms ~/.local/share/namco-2x-systems/timecris/roms ~/.local/share/namco-2x-systems/acedriver/roms ~/.local/share/namco-2x-systems/cybrcomm/roms ~/.local/share/namco-2x-systems/cybsled/roms ~/.local/share/namco-2x-systems/tc2/roms
+  mkdir -p ~/.local/share/namco-2x-systems/propcycle/roms ~/.local/share/namco-2x-systems/raverace/roms ~/.local/share/namco-2x-systems/tokyowar/roms ~/.local/share/namco-2x-systems/dirtdash/roms ~/.local/share/namco-2x-systems/adillor/roms ~/.local/share/namco-2x-systems/timecris/roms ~/.local/share/namco-2x-systems/acedriver/roms ~/.local/share/namco-2x-systems/cybrcomm/roms ~/.local/share/namco-2x-systems/cybsled/roms ~/.local/share/namco-2x-systems/tc2/roms
   cp propcycl.zip ~/.local/share/namco-2x-systems/propcycle/roms/
   cp raverace.zip namcoc74.zip ~/.local/share/namco-2x-systems/raverace/roms/
   cp tokyowar.zip ~/.local/share/namco-2x-systems/tokyowar/roms/
   cp dirtdash.zip ~/.local/share/namco-2x-systems/dirtdash/roms/
+  cp adillor.zip ~/.local/share/namco-2x-systems/adillor/roms/
   cp timecris.zip ~/.local/share/namco-2x-systems/timecris/roms/
   cp acedrive.zip namcoc74.zip ~/.local/share/namco-2x-systems/acedriver/roms/
   cp cybrcomm.zip namcoc74.zip ~/.local/share/namco-2x-systems/cybrcomm/roms/
@@ -65,6 +67,8 @@ Tokyo Wars:  5 coin, Enter start, arrow keys (or A/D) steer, Up/W forward, Down/
              `tokyowars 2` = window scale 2.
 Dirt Dash:   5 coin (a game costs two), Z brake, X gas (throttle), C select (view change / confirm), Left/Right
              (A/D) steer, Q / E shift down / up, M motion stop, P pause, Esc menu, F12 picture.   `dirtdash 2` = window scale 2.
+Armadillo Racing: the MOUSE is the trackball (captured while playing; Esc releases it), click / Enter start, 5 coin
+             (a game costs four), arrows or the left stick roll the ball too, Esc menu, F2 test switch.   `armadilloracing 2` = window scale 2.
 Time Crisis: the MOUSE is the gun: move it to aim, left button = shoot, right button (or Z) = the foot pedal (come out of cover / reload),
              5 coin (a game costs 3), Esc menu, F2 the operator's test switch, F8 a white border round the picture for
              light guns that need one. An absolute-mouse light gun (Sinden, Gun4IR, OpenFIRE, Reaper, AimTrak) works as a

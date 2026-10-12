@@ -46,13 +46,18 @@ static inline void RS10(uint32_t o, uint64_t v) { R[o] = 0; R[o + 1] = 0; RS8(o 
 /* MAIN RAM INLINE (2026-10-08): rr_read / rr_write were ~12% of a run, nearly all of it main RAM; their first branch is exactly this
  * (the 28-bit physical address inside the 16 MB, big-endian), so taking it here changes nothing and skips the call + byte loop. */
 extern uint8_t tc2_ram[0x1000000];
-static inline uint32_t MRD1(uint32_t a) { const uint32_t p = a & 0x0FFFFFFFu; if (p < 0x1000000u) return tc2_ram[p]; return rr_read(a, 1); }
-static inline uint32_t MRD2(uint32_t a) { const uint32_t p = a & 0x0FFFFFFFu; if (p + 2 <= 0x1000000u) { uint16_t v; memcpy(&v, tc2_ram + p, 2); return __builtin_bswap16(v); } return rr_read(a, 2); }
-static inline uint32_t MRD4(uint32_t a) { const uint32_t p = a & 0x0FFFFFFFu; if (p + 4 <= 0x1000000u) { uint32_t v; memcpy(&v, tc2_ram + p, 4); return __builtin_bswap32(v); } return rr_read(a, 4); }
+/* the board's decoded address lines, for the main-RAM fast path below: System 23 decodes 28 (0x0FFFFFFF), Evolution 2 29 (crszone's CMakeLists
+ * defines 0x1FFFFFFF) -- with 28 on Evolution 2, its registers at 0x10000000 (the IRQ status words 0x100000A8..B4) would land in main RAM */
+#ifndef TC2_ADDR_MASK
+#define TC2_ADDR_MASK 0x0FFFFFFFu
+#endif
+static inline uint32_t MRD1(uint32_t a) { const uint32_t p = a & TC2_ADDR_MASK; if (p < 0x1000000u) return tc2_ram[p]; return rr_read(a, 1); }
+static inline uint32_t MRD2(uint32_t a) { const uint32_t p = a & TC2_ADDR_MASK; if (p + 2 <= 0x1000000u) { uint16_t v; memcpy(&v, tc2_ram + p, 2); return __builtin_bswap16(v); } return rr_read(a, 2); }
+static inline uint32_t MRD4(uint32_t a) { const uint32_t p = a & TC2_ADDR_MASK; if (p + 4 <= 0x1000000u) { uint32_t v; memcpy(&v, tc2_ram + p, 4); return __builtin_bswap32(v); } return rr_read(a, 4); }
 static inline uint64_t MRD8(uint32_t a) { return (uint64_t)MRD4(a) << 32 | MRD4(a + 4); }
-static inline void MWR1(uint32_t a, uint64_t v) { const uint32_t p = a & 0x0FFFFFFFu; if (p < 0x1000000u) { tc2_ram[p] = (uint8_t)v; return; } rr_write(a, 1, (uint32_t)v); }
-static inline void MWR2(uint32_t a, uint64_t v) { const uint32_t p = a & 0x0FFFFFFFu; if (p + 2 <= 0x1000000u) { const uint16_t w = __builtin_bswap16((uint16_t)v); memcpy(tc2_ram + p, &w, 2); return; } rr_write(a, 2, (uint32_t)v); }
-static inline void MWR4(uint32_t a, uint64_t v) { const uint32_t p = a & 0x0FFFFFFFu; if (p + 4 <= 0x1000000u) { const uint32_t w = __builtin_bswap32((uint32_t)v); memcpy(tc2_ram + p, &w, 4); return; } rr_write(a, 4, (uint32_t)v); }
+static inline void MWR1(uint32_t a, uint64_t v) { const uint32_t p = a & TC2_ADDR_MASK; if (p < 0x1000000u) { tc2_ram[p] = (uint8_t)v; return; } rr_write(a, 1, (uint32_t)v); }
+static inline void MWR2(uint32_t a, uint64_t v) { const uint32_t p = a & TC2_ADDR_MASK; if (p + 2 <= 0x1000000u) { const uint16_t w = __builtin_bswap16((uint16_t)v); memcpy(tc2_ram + p, &w, 2); return; } rr_write(a, 2, (uint32_t)v); }
+static inline void MWR4(uint32_t a, uint64_t v) { const uint32_t p = a & TC2_ADDR_MASK; if (p + 4 <= 0x1000000u) { const uint32_t w = __builtin_bswap32((uint32_t)v); memcpy(tc2_ram + p, &w, 4); return; } rr_write(a, 4, (uint32_t)v); }
 static inline void MWR8(uint32_t a, uint64_t v) { MWR4(a, v >> 32); MWR4(a + 4, v); }
 
 static inline int64_t SX1(uint64_t v) { return (int8_t)v; }

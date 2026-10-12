@@ -117,9 +117,7 @@ void rr_trace_ins(uint32_t pc)
 #define SH_IRQ 0xFFFFFFFFu
 static uint32_t sh_ret[SHADOW_MAX], sh_sp[SHADOW_MAX];
 static int sh_n, sh_target = -1;          /* sh_target: frame index the unwind stops at */
-#ifdef RR_TRACE
 void rr_dump_shadow(void) { fprintf(stderr, "  shadow stack:"); for (int k = sh_n - 1; k >= 0 && k >= sh_n - 12; k--) fprintf(stderr, " %08X", sh_ret[k]); fprintf(stderr, "\n"); }
-#endif
 /* A program that restarts itself from inside an interrupt handler (`jmp <entry>`) re-initialises the stack pointer and never returns through the frames it
  * abandoned: their shadow entries (and IRQ markers) are dead. A frame whose recorded SP is BELOW the current SP has been popped past -- drop it, and recount
  * the interrupts still open. Opt-in (ss22_game.prune_shadow): a program that pops return addresses by hand would lose frames it still needs. */

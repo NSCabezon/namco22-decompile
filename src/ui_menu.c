@@ -25,6 +25,7 @@
 #define NK_SDL_GL2_IMPLEMENTATION
 #include "../third_party/nuklear.h"
 #include "../third_party/nuklear_sdl_gl2.h"
+#include "../engine/eng_nk_style.h"
 
 #include "ui_menu.h"
 #include "propcycl.h"
@@ -364,6 +365,7 @@ void ui_init(SDL_Window *win) {
     struct nk_font_atlas *atlas;
     nk_sdl_font_stash_begin(&atlas);
     nk_sdl_font_stash_end();
+    eng_nk_style_highlight(ctx);
     ui_controls_defaults();
     ui_controls_load();          /* a saved remap wins over the defaults */
     /* PROPCYCL_MENU_OPEN=1: start with the menu up, so a headless
@@ -383,6 +385,7 @@ void ui_init(SDL_Window *win) {
 
 void ui_shutdown(void) { if (ctx) nk_sdl_shutdown(); ctx = NULL; }
 bool ui_is_open(void) { return menu_open; }
+bool ui_cancel_capture(void) { if (rebinding < 0) return false; rebinding = -1; return true; }   /* Escape while a key is being rebound */
 void ui_toggle(void) {
     menu_open = !menu_open;
     if (!menu_open) rebinding = -1;

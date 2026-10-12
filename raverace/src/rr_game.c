@@ -19,5 +19,6 @@ static const rr_game_t rave = {
     .steer_add = 32, .gas_add = 992, .brake_add = 3008,
     .inputs_idle = 0xFEFF, .steer_min = 0x280, .steer_max = 0xD80, .gas_max = 0x610, .brake_max = 0x610, .gas_delta = 160, .brake_delta = 160,
     .spin_pc = 0x452D, .spin_op = 0x2000,
+    .select_addr = 0x1000A332, .select_vals = { 0x12, 0x17 },   /* the game's state word: 0x12 SELECT YOUR TRANSMISSION, 0x17 SELECT A COURSE (0x18/0x19/0 the race) */
 };
 const rr_game_t *g_rr_game = &rave;

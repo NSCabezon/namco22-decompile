@@ -13,6 +13,10 @@ typedef struct { SDL_Scancode keys[RR_MAXKEYS]; int nkeys; SDL_GameControllerBut
 extern rr_bind_t g_bind[RR_ACT_N];
 extern int g_steer_speed, g_steer_return, g_pad_deadzone, g_cfg_freeplay;
 extern int g_cfg_ffb_strength, g_cfg_ffb_invert;
+#define RR_STICK_N 4                      /* Controls > Stick steering (GitHub #42): the gamepad stick's response curve */
+extern const char *const g_stick_steer_name[RR_STICK_N];
+extern const double g_stick_steer_curve[RR_STICK_N];
+extern int g_cfg_stick_steer;
 extern int g_cfg_fullscreen, g_cfg_scale, g_cfg_scaling, g_cfg_volume;
 extern int g_cfg_winmode, g_cfg_res_w, g_cfg_res_h, g_cfg_wide, g_cfg_aspect, g_cfg_draw, g_cfg_fps;
 extern char g_cfg_net_server[128], g_cfg_net_name[24];   /* the Online page's server and lobby name */

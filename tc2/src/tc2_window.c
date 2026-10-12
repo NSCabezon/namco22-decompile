@@ -24,6 +24,7 @@
 #include "eng/eng_pace.h"
 #include "eng/ss22_input.h"
 #include "tc2_build.h"
+#include "tc2_game.h"
 extern const ss22_input_game tc2_input_game;
 
 int g_eng_hud_edges_on;                       /* eng_display.c's widescreen-HUD switch: no 2D HUD to move on this board yet */
@@ -75,8 +76,8 @@ void tc2_crash_box(const char *why)
 {
     if (!win) return;
     char m[512];
-    snprintf(m, sizeof m, "Time Crisis 2 had to stop:\n\n%s\n\nYour settings and scores were not touched. Please report this, with tc2.log if there is one.", why);
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Time Crisis 2", m, win);
+    snprintf(m, sizeof m, "%s had to stop:\n\n%s\n\nYour settings and scores were not touched. Please report this, with %s.log if there is one.", tc2_game.title, why, tc2_game.tag);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, tc2_game.title, m, win);
 }
 
 int tc2_window_open(int scale, int fullscreen)
@@ -86,10 +87,10 @@ int tc2_window_open(int scale, int fullscreen)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    eng_disp_load("tc2.cfg", scale, fullscreen != 0);
+    { static char cfg[64]; snprintf(cfg, sizeof cfg, "%s.cfg", tc2_game.tag); eng_disp_load(cfg, scale, fullscreen != 0); }
     g_eng_disp_light_gun = true;                 /* a light-gun game: the Display page shows the crosshair row */
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
-    win = SDL_CreateWindow("Time Crisis II", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+    win = SDL_CreateWindow(tc2_game.window_title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                            eng_disp_win_w(g_eng_disp.scale), eng_disp_win_h(g_eng_disp.scale),
                            SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | (g_eng_disp.winmode ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
     if (!win) { fprintf(stderr, "[HOST] window: %s\n", SDL_GetError()); return 0; }
@@ -140,13 +141,15 @@ static void draw_picture(void)
 }
 
 /* the aiming CROSSHAIR (Display > Crosshair, ON by default, saved as crosshair=): at the aim point -- the mouse until the gun I/O is in --
- * over the picture, the OS cursor hidden there while it is on */
+ * over the picture; the OS cursor hidden there while it is on, and everywhere in play while it is off */
 static void draw_crosshair(void)
 {
     float ax, ay; int dw, dh;
     SDL_GL_GetDrawableSize(win, &dw, &dh);
     const int on = ss22_input_aim(&ax, &ay);                     /* the copied input module: mouse, absolute-mouse gun, either stick, the keys */
-    SDL_ShowCursor(g_eng_disp.crosshair && on && !eng_ui_is_open() ? SDL_DISABLE : SDL_ENABLE);
+    /* the OS pointer: shown on the menu; in play hidden over the picture with the crosshair on, and ALWAYS with the crosshair off (a light-gun
+     * player turns the crosshair off to see nothing but the game) */
+    SDL_ShowCursor(eng_ui_is_open() ? SDL_ENABLE : (!g_eng_disp.crosshair || on) ? SDL_DISABLE : SDL_ENABLE);
     if (!g_eng_disp.crosshair || !on || eng_ui_is_open()) return;
     const SDL_Rect r = pic_r;
     const float x = r.x + ax * r.w, y = r.y + ay * r.h;
@@ -215,7 +218,9 @@ static int pass(int new_frame)
     }
     if (eng_ui_is_open() || paused) ss22_input_neutral(); else if (new_frame) ss22_input_update();
     if (new_frame && gpu) {                                      /* the newest built frame, drawn on the GPU at the chosen internal resolution */
-        tc2_gl_set_scale(g_eng_disp.res_h > 0 ? (g_eng_disp.res_h + 240) / 480 : 1);
+        /* the internal resolution is a whole multiple of the board's 480 lines; "Native (window size)" (res_h 0) takes the window's height
+         * through eng_disp_render_size like every other game -- it used to be a fixed 1x (640x480) whatever the window (GitHub #44) */
+        { int rw, rh; eng_disp_render_size(&rw, &rh); tc2_gl_set_scale((rh + 240) / 480); }
         tc2_gl_set_wide(wide_ex());
         const tc2_built *b = tc2_built_latest();
         if (b) gpu_tex = tc2_gl_draw(b);
@@ -243,7 +248,7 @@ static int pass(int new_frame)
         SDL_GL_SwapWindow(win);
     }
     eng_vsync_after_frame(&vs, win);
-    eng_pace_after(&pace, "tc2");
+    eng_pace_after(&pace, tc2_game.tag);
     return !(quit || eng_ui_quit_requested());
 }
 
@@ -253,5 +258,5 @@ void tc2_window_frame(void)
     if (!win) return;
     int ok = pass(1);
     while (ok && (eng_ui_is_open() || paused)) { ok = pass(0); if (!eng_ui_is_open() && !paused) eng_vsync_resync(&vs); }
-    if (!ok) { fprintf(stderr, "[HOST] quit\n"); { void tc2_backup_save(int); tc2_backup_save(1); } ss22_input_close(); eng_ui_shutdown(); SDL_Quit(); exit(0); }
+    if (!ok) { fprintf(stderr, "[HOST] quit\n"); { void tc2_backup_save(int); tc2_backup_save(1); } { void tc2_out_close(void); tc2_out_close(); } ss22_input_close(); eng_ui_shutdown(); SDL_Quit(); exit(0); }
 }

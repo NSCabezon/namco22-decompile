@@ -188,6 +188,15 @@ void rr_hw_set_freeplay(bool on)
     g_rr.wram[0x1043] = on ? 1 : 0;
 }
 bool rr_hw_freeplay(void) { return g_rr.wram[0x1043] != 0; }
+/* GitHub #35: is the game on one of its wheel-position selection screens (rr_game_t.select_addr / select_vals)? */
+bool rr_hw_select_screen(void)
+{
+    const uint32_t a = g_rr_game->select_addr - 0x10000000u;
+    if (!g_rr_game->select_addr || a + 1 >= RR_WRAM_SIZE) return false;
+    const uint16_t v = (uint16_t)(g_rr.wram[a] << 8 | g_rr.wram[a + 1]);
+    for (int i = 0; i < 4 && g_rr_game->select_vals[i]; i++) if (v == g_rr_game->select_vals[i]) return true;
+    return false;
+}
 
 /* THE EEPROM FILE (engine/ss22_board.c's scheme): the test menu's settings, the coin options and the records live in the
  * EEPROM, which used to come from rv1eeprm.9e at every start and was never written back -- a change in the test menu was

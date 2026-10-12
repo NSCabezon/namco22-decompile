@@ -28,7 +28,9 @@ PLAYING
 
 LIGHT GUNS: any gun that works as an absolute mouse (Sinden, GUN4IR, OpenFIRE, Blamcon, AimTrak) aims with the pointer.
 RECOIL: the game's gun solenoid is sent out like MAME's network output (tcp 127.0.0.1:8000, "gun_recoil"), so MAMEHooker or
-Hook Of The Reaper can drive a recoil gun; a pad rumbles instead.
+Hook Of The Reaper can drive a recoil gun; a pad rumbles instead. MAME does not send this signal itself, so Hook of the
+Reaper needs the game file in the hotr folder: copy hotr/timecrs2.txt into its defaultLG folder (hotr/README.txt says more).
+Display > Recoil outputs / Pad rumble on recoil turn each on or off.
 
 Settings are kept in tc2.cfg, the machine's settings, bookkeeping and rankings in tc2_backup.nv (the arcade board's battery RAM),
 both in the game's folder (Windows: next to the .exe; Linux: ~/.local/share/tc2/). The log of the last start is tc2.log there.
