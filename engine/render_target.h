@@ -11,5 +11,7 @@ void rt_begin(SDL_Window *win, int res_w, int res_h, int *out_w, int *out_h);
 void rt_end(SDL_Window *win, int stretch);
 /* Or: into the window rectangle (x, y top-left, drawable pixels), sharp = nearest. */
 void rt_end_rect(SDL_Window *win, int x, int y, int w, int h, int sharp);
+/* the same without clearing the window first (several pictures side by side: the stereo SBS window) */
+void rt_end_rect_keep(SDL_Window *win, int x, int y, int w, int h, int sharp);
 
 #endif

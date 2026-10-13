@@ -153,7 +153,10 @@ void rt_end(SDL_Window *win, int stretch) {
  * drawable pixels), with a chosen filter: the host that owns the picture's
  * placement (integer scaling, aspect modes, sharp/smooth) says where. A no-op
  * when rt_begin drew directly. The rest of the window is cleared to black. */
-void rt_end_rect(SDL_Window *win, int x, int y, int w, int h, int sharp) {
+static void end_rect(SDL_Window *win, int x, int y, int w, int h, int sharp, int clear);
+void rt_end_rect(SDL_Window *win, int x, int y, int w, int h, int sharp) { end_rect(win, x, y, w, h, sharp, 1); }
+void rt_end_rect_keep(SDL_Window *win, int x, int y, int w, int h, int sharp) { end_rect(win, x, y, w, h, sharp, 0); }
+static void end_rect(SDL_Window *win, int x, int y, int w, int h, int sharp, int clear) {
     if (!active) return;
     active = 0;
     int dw, dh;
@@ -162,8 +165,7 @@ void rt_end_rect(SDL_Window *win, int x, int y, int w, int h, int sharp) {
     bind_fb(GL_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST);
     glViewport(0, 0, dw, dh);
-    glClearColor(0, 0, 0, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
+    if (clear) { glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT); }
     bind_fb(GL_READ_FRAMEBUFFER, fbo);
     bind_fb(GL_DRAW_FRAMEBUFFER, 0);
     const int gy = dh - (y + h);                 /* GL's origin is bottom-left */

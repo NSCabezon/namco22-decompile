@@ -28,6 +28,7 @@
 #include "ss22_host.h"
 #include "eng_ffb.h"
 #include "gl_warn.h"
+static bool sbs_on(void);                            /* the stereo side-by-side window (present_sbs) */
 
 
 static const ss22_host_game *game;
@@ -78,7 +79,7 @@ bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)      /* scale <
     const Uint32 hidpi = SDL_WINDOW_ALLOW_HIGHDPI;
 #endif
     win = SDL_CreateWindow(game->title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                           eng_disp_win_w(g_eng_disp.scale), eng_disp_win_h(g_eng_disp.scale),
+                           eng_disp_win_w(g_eng_disp.scale) * (sbs_on() ? 2 : 1), eng_disp_win_h(g_eng_disp.scale),
                            SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | hidpi |
                            (g_eng_disp.winmode ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
     if (!win) { fprintf(stderr, "[HOST] window: %s\n", SDL_GetError()); return false; }
@@ -162,10 +163,56 @@ void ss22_host_shot(const char *path)
 /* The prepared frame into the window: the engine draws it at the render size into the shared render target, which is scaled
  * into the picture rectangle; the menu, when open, goes over it. */
 static SDL_Rect pic_r, gun_r;                        /* the last picture rectangle (drawable pixels) and the 4:3 part of it the light gun aims over */
+
+/* STEREO SIDE BY SIDE (tc-visionos PLAN.md level 2a, on a desktop): ENG_SBS=1 draws each update twice, the left eye in the window's
+ * left half and the right eye in its right half (parallel viewing: an SBS 3D display, a phone VR viewer, or free viewing);
+ * ENG_SBS=cross swaps the halves for cross-eyed viewing. ENG_STEREO=<sep>,<zc> sets the strength and the screen depth (default
+ * 1000,100000, the visionOS core's measured defaults). The window opens twice as wide; the gun aims over the left eye's picture,
+ * the crosshair shows in both. Off (the default) the window is exactly as before. */
+static int   sbs = -1;                               /* -1 not read yet, 0 off, 1 parallel, 2 cross */
+static float sbs_sep = 1000.0f, sbs_zc = 100000.0f;
+static SDL_Rect sbs_r[2];                            /* the two pictures, in window order */
+static bool sbs_on(void)
+{
+    if (sbs < 0) {
+        const char *e = getenv("ENG_SBS");
+        sbs = !(e && *e && *e != '0') ? 0 : !strcmp(e, "cross") ? 2 : 1;
+        const char *s = getenv("ENG_STEREO");
+        if (s && strchr(s, ',')) sscanf(s, "%f,%f", &sbs_sep, &sbs_zc);
+        if (sbs) fprintf(stderr, "[HOST] stereo side by side (%s): sep %.0f, zc %.0f\n", sbs == 2 ? "cross-eyed" : "parallel", sbs_sep, sbs_zc);
+    }
+    return sbs > 0;
+}
+
+/* the update once per eye, each into its half of the window */
+static void present_sbs(void)
+{
+    int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
+    int rw, rh; eng_disp_render_size(&rw, &rh);
+    rw = (int)(rh * 4.0 / 3.0 + 0.5);                 /* each eye 4:3 */
+    const int hw = dw / 2;
+    int w = hw, h = (int)(hw * 0.75 + 0.5);
+    if (h > dh) { h = dh; w = (int)(dh * 4.0 / 3.0 + 0.5); }
+    geo_hw_set_stereo(sbs_sep, sbs_zc, 0.03f);
+    for (int k = 0; k < 2; k++) {                      /* k: the window half */
+        const int eye = (k == 0) == (sbs == 1) ? -1 : +1;
+        int vw, vh;
+        rt_begin(win, rw, rh, &vw, &vh);
+        ss22_draw_eye(vw, vh, eye);
+        const SDL_Rect r = { k * hw + (hw - w) / 2, (dh - h) / 2, w, h };
+        sbs_r[k] = r;
+        if (eye < 0) { pic_r = r; gun_r = r; }
+        if (k == 0) rt_end_rect(win, r.x, r.y, r.w, r.h, eng_disp_sharp());
+        else        rt_end_rect_keep(win, r.x, r.y, r.w, r.h, eng_disp_sharp());
+    }
+}
 static eng_pace *pace_log;                           /* set by present_with(): present() times the frame's work into it */
 static void present(void)
 {
-    int rw, rh, vw, vh;
+    int rw = 0, rh = 0, vw, vh;
+    const bool stereo = sbs_on();
+    if (stereo) present_sbs();
+    else {
     eng_disp_render_size(&rw, &rh);
     rt_begin(win, rw, rh, &vw, &vh);
     struct timespec d0, d1; clock_gettime(CLOCK_MONOTONIC, &d0);
@@ -186,7 +233,8 @@ static void present(void)
     pic_r = r; gun_r = r;
     if (g_eng_disp.wide) { const int w = (int)(r.h * 4.0 / 3.0 + 0.5); gun_r.x = r.x + (r.w - w) / 2; gun_r.w = w; }   /* the 2D layers and the gun stay 4:3 */
     rt_end_rect(win, r.x, r.y, r.w, r.h, eng_disp_sharp());
-    if (game->aim && g_eng_disp.gun_border) {          /* the light gun's border (Sinden-style guns track it): white, all round the window */
+    }
+    if (game->aim && g_eng_disp.gun_border && !stereo) {          /* the light gun's border (Sinden-style guns track it): white, all round the window */
         int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
         const float b = (float)(g_eng_disp.gun_border * (dw < dh ? dw : dh) / 100);
         glViewport(0, 0, dw, dh);
@@ -206,8 +254,10 @@ static void present(void)
         float ax, ay;
         if (game->aim(&ax, &ay)) {                   /* the crosshair, over the picture */
             int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
-            const float cx = gun_r.x + ax * gun_r.w, cy = gun_r.y + ay * gun_r.h, s = gun_r.h / 24.0f;
             glViewport(0, 0, dw, dh);
+            for (int pic = 0; pic < (stereo ? 2 : 1); pic++) {   /* side by side: the same cross in both pictures (at the screen plane) */
+            const SDL_Rect g = stereo ? sbs_r[pic] : gun_r;
+            const float cx = g.x + ax * g.w, cy = g.y + ay * g.h, s = g.h / 24.0f;
             glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); glOrtho(0, dw, dh, 0, -1, 1);
             glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
             glDisable(GL_TEXTURE_2D); glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND); glDisable(GL_SCISSOR_TEST);
@@ -219,6 +269,7 @@ static void present(void)
                 glEnd();
             }
             glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW);
+            }
         }
     }   /* clears the window round the picture itself; a no-op when rt_begin drew straight into it */
     bool quit = false;
@@ -233,11 +284,11 @@ static void present(void)
           if (dbg && n % 60 == 0) {
               unsigned char px[3 * 16]; int lit = 0;
               for (int i = 0; i < 16; i++) {
-                  glReadPixels(r.x + r.w * (i % 4 + 1) / 5, r.y + r.h * (i / 4 + 1) / 5, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, px + 3 * i);
+                  glReadPixels(pic_r.x + pic_r.w * (i % 4 + 1) / 5, pic_r.y + pic_r.h * (i / 4 + 1) / 5, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, px + 3 * i);
                   lit += px[3 * i] | px[3 * i + 1] | px[3 * i + 2] ? 1 : 0;
               }
               fprintf(stderr, "[HOST] frame %d: window %dx%d, render %dx%d, picture %d,%d %dx%d, %d of 16 sample pixels lit, GL error 0x%X\n",
-                      n, dw, dh, rw, rh, r.x, r.y, r.w, r.h, lit, glGetError());
+                      n, dw, dh, rw, rh, pic_r.x, pic_r.y, pic_r.w, pic_r.h, lit, glGetError());
           }
           if (shot && n == shot) {
               char p[96]; snprintf(p, sizeof p, "screenshots/%s_window_%d.ppm", game->shot_prefix, n);
