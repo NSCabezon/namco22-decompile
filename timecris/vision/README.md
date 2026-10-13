@@ -73,6 +73,24 @@ cmake --build build-coremac --target tc_core_test
 The harness runs attract mode, then stop and resume, then three coins and start, then play with a trigger every 0.5 s.
 It saves frames as PPM files and counts `TC_EVENT_SHOT`.
 
+## Stereo 3D (tc-visionos PLAN.md level 2a)
+
+- `tc_core_set_stereo(sep, zc)`: sep <= 0 is mono, which is the same single render as before. With stereo on, each
+  update is walked once (`ss22_prepare`), then drawn twice (`ss22_draw_eye`): the right eye into glmetal target 1, the
+  left eye into target 0 (`glmetal_set_target`). The hook publishes both images in one slot, and
+  `tc_core_latest_frame_stereo` returns them as a pair.
+- The eyes differ only in the polygons' screen x. `geo_hw_quad_eye` shifts each vertex by `e*(sep/2)*K*(1/zc - 1/z)`.
+  That is the off-axis projection `X - e*sep/2`, recentred at zc. It covers rv and the guard-band dv, and keeps the
+  mono numbers so eye 0 restores them exactly. Crossed disparity is capped at 3 % of the width.
+- These run once per update, so both eyes share them: the walk, the sort, the texture bakes and their budget (keyed on
+  `g_eng_frame`), the sprites, the text, the fade and the gamma.
+- Defaults: sep 1000, zc 100000. They were measured with `ENG_ZHIST=<n>` (the area-weighted view depth on screen) over
+  attract mode and stage 1. Far objects end up 1.2 % of the width behind the screen. `tc_core.h` has the numbers.
+- Checks:
+  - `ENG_STEREO=<sep>,<zc> tc_metal ... --shots DIR N` also writes `_L` and `_R` PPMs. The mono shot is unchanged.
+  - `TC_TEST_STEREO=1 tc_core_test` saves pairs.
+  - M1 Max: draw+encode is 2.6 ms mono and 3.4 ms stereo.
+
 ## Notes
 
 - **The simulator GPU** reports the Apple1 family but cannot read the render target. glmetal probes the

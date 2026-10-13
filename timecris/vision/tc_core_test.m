@@ -5,6 +5,8 @@
  *
  *   tc_core_test <rom_dir> <out_dir> [seconds=60]
  * Writes <out_dir>/core_<t>s.ppm at a few moments: attract mode, after coins + start, in play (trigger every 0.5 s, pedal held).
+ * TC_TEST_STEREO=1 (or =<sep>,<zc>): stereo on (tc_core_set_stereo, the header's defaults); each moment is then saved as a
+ * <name>_L.ppm / <name>_R.ppm pair from tc_core_latest_frame_stereo.
  */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -21,11 +23,21 @@ static void on_event(void *user, tc_core_event e, int32_t v) { (void)user; (void
 
 static void sleep_s(double s) { [NSThread sleepForTimeInterval:s]; }
 
+static void save_tex(id<MTLDevice> dev, id<MTLCommandQueue> q, const char *dir, const char *name, id<MTLTexture> t, uint64_t fid);
 static void save(id<MTLDevice> dev, id<MTLCommandQueue> q, const char *dir, const char *name)
 {
-    uint64_t fid = 0;
-    id<MTLTexture> t = (__bridge id<MTLTexture>)tc_core_latest_frame(&fid);
+    uint64_t fid = 0; void *rp = NULL;
+    id<MTLTexture> t = (__bridge id<MTLTexture>)tc_core_latest_frame_stereo(&fid, &rp);
     if (!t) { fprintf(stderr, "[TEST] no frame yet\n"); return; }
+    id<MTLTexture> r = (__bridge id<MTLTexture>)rp;
+    if (r == t) { save_tex(dev, q, dir, name, t, fid); return; }
+    char n[256];
+    snprintf(n, sizeof n, "%s_L", name); save_tex(dev, q, dir, n, t, fid);
+    snprintf(n, sizeof n, "%s_R", name); save_tex(dev, q, dir, n, r, fid);
+}
+
+static void save_tex(id<MTLDevice> dev, id<MTLCommandQueue> q, const char *dir, const char *name, id<MTLTexture> t, uint64_t fid)
+{
     const NSUInteger w = t.width, h = t.height;
     id<MTLBuffer> buf = [dev newBufferWithLength:w * h * 4 options:MTLResourceStorageModeShared];
     id<MTLCommandBuffer> cb = [q commandBuffer];
@@ -57,6 +69,8 @@ int main(int argc, char **argv)
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         id<MTLCommandQueue> q = [dev newCommandQueue];
         tc_core_set_event_callback(on_event, NULL);
+        { const char *e = getenv("TC_TEST_STEREO"); float sep = TC_STEREO_DEFAULT_SEP, zc = TC_STEREO_DEFAULT_ZC;
+          if (e && *e && *e != '0') { if (strchr(e, ',')) sscanf(e, "%f,%f", &sep, &zc); tc_core_set_stereo(sep, zc); fprintf(stderr, "[TEST] stereo sep %.0f zc %.0f\n", sep, zc); } }
         const int rc = tc_core_start(rom_abs, (__bridge void *)dev, 640, 480);
         fprintf(stderr, "[TEST] tc_core_start -> %d\n", rc);
         if (rc) return 1;

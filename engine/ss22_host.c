@@ -17,6 +17,7 @@
 #include "eng_gl.h"
 #include "render_target.h"
 #include "ss22_gl.h"
+#include "geo_hw.h"
 #include "audio_out.h"
 #include "eng_display.h"
 #include "eng_ui.h"
@@ -134,6 +135,25 @@ void ss22_host_shot(const char *path)
         vw = headless_w; vh = 480;
         ss22_draw(vw, vh);
         eng_gl_write_ppm(path, vw, vh);
+        /* ENG_STEREO=<sep>,<zc>[,<max crossed>]: also each eye of the same update, as <name>_L.ppm and <name>_R.ppm (the stereo check,
+         * tc-visionos PLAN.md level 2a); the mono shot above is unchanged */
+        static int st = -1; static float sep, zc, mc;
+        if (st < 0) { const char *e = getenv("ENG_STEREO"); st = e && sscanf(e, "%f,%f,%f", &sep, &zc, &mc) >= 2 && sep > 0 && zc > 0; }
+        if (st) {
+            geo_hw_set_stereo(sep, zc, mc);
+            const size_t n = strlen(path);
+            char *p = malloc(n + 3);
+            if (p) {
+                const char *dot = strrchr(path, '.'); const size_t stem = dot ? (size_t)(dot - path) : n;
+                for (int e = -1; e <= 1; e += 2) {
+                    snprintf(p, n + 3, "%.*s_%c%s", (int)stem, path, e < 0 ? 'L' : 'R', dot ? dot : "");
+                    ss22_draw_eye(vw, vh, e);
+                    eng_gl_write_ppm(p, vw, vh);
+                }
+                ss22_draw_eye(vw, vh, 0);                /* (the quads back to mono for whatever draws next) */
+                free(p);
+            }
+        }
     }
     FILE *chk = fopen(path, "rb");                   /* say so when the folder is missing, rather than "saved" */
     if (chk) { fclose(chk); fprintf(stderr, "[HOST] saved %s\n", path); } else fprintf(stderr, "[HOST] could not write %s (does the folder exist?)\n", path);

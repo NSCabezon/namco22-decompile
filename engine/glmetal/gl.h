@@ -348,6 +348,11 @@ int  glmetal_height(void);
  * between two textures when the device lacks framebuffer fetch (the gamma pass ping-pongs). Read it after
  * glmetal_end_frame's hook or a glFinish. */
 void *glmetal_target_texture(void);
+/* STEREO: a second framebuffer, the same size (made on first use; glmetal_create at a new size drops it). Every draw, clear,
+ * readback and glmetal_post_lut goes to the target selected here (0 = the one glmetal_create made, the default). */
+void  glmetal_set_target(int i);
+int   glmetal_current_target(void);
+void *glmetal_target_texture_n(int i);      /* target i's current texture (id<MTLTexture>, bridged, not retained); NULL if never made */
 int   glmetal_target_bottom_up(void);       /* 1: row 0 of the texture is GL's bottom row (a presenter would flip V); 0 by default */
 void *glmetal_device(void);                 /* id<MTLDevice>, bridged */
 void *glmetal_command_queue(void);          /* id<MTLCommandQueue>, bridged */

@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 #include <SDL2/SDL.h>
 #include "eng_gl.h"
 #include "eng.h"
@@ -33,6 +34,7 @@
 /* ------------------------------------------------------------------ the quads */
 static geo_quad *qbuf;
 static int       qn, qcap, qorder;
+static int       qeye;                       /* the eye qbuf's screen x currently hold (0 = mono, as walked); see ss22_draw_eye */
 
 static void push_quad(const geo_quad *q, void *user)
 {
@@ -70,6 +72,7 @@ static void ss22_fade_rgb(float *r, float *g, float *b)
 
 static void ss22_qhist_report(void);
 static void ss22_cliplog_report(void);
+static void ss22_zhist_report(void);
 
 /* ------------------------------------------------------------------ prepared state */
 static text_state      tst;
@@ -150,11 +153,53 @@ void ss22_prepare(const ss22_regs *r)
         eng_walk_list(r->poly_word, &cfg, push_quad, NULL);
         eng_quad_sort(qbuf, qn, 0);
     }
+    qeye = 0;
+    ss22_zhist_report();
     ss22_qhist_report();
     ss22_cliplog_report();
 }
 
 int ss22_quads(void)   { return qn; }
+
+/* ENG_ZHIST=<n>: the view depth (z) of what the 3D layer shows, for choosing the stereo convergence depth (tc-visionos PLAN.md level 2a).
+ * Every update, each quad's mean rv depth weighted by its on-screen area (its bbox clipped to 640x480), in 1/8-octave bins; every n
+ * updates the percentiles of that window and of the whole run, the zoom K and the near/far quads seen. Diagnostic only. */
+static void ss22_zhist_report(void)
+{
+    static int want = -1;
+    if (want < 0) { const char *e = getenv("ENG_ZHIST"); want = e ? atoi(e) : 0; }
+    if (want <= 0) return;
+    enum { NB = 8 * 24 };                              /* 2^0 .. 2^24 */
+    static double win[NB], all[NB]; static int nf; static long kmin = 1L << 40, kmax;
+    for (int i = 0; i < qn; i++) {
+        const geo_quad *q = &qbuf[i];
+        if (q->nrv < 3) continue;
+        double zs = 0; int x0 = 1 << 30, x1 = -(1 << 30), y0 = 1 << 30, y1 = -(1 << 30);
+        for (int k = 0; k < q->nrv; k++) {
+            zs += q->rv[k].z;
+            const int x = q->rv[k].sx16 >> 4, y = q->rv[k].sy16 >> 4;
+            if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        }
+        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 > 640) x1 = 640; if (y1 > 480) y1 = 480;
+        if (x1 <= x0 || y1 <= y0) continue;
+        const double area = (double)(x1 - x0) * (y1 - y0), z = zs / q->nrv;
+        int b = z >= 1 ? (int)(log2(z) * 8) : 0; if (b >= NB) b = NB - 1;
+        win[b] += area; all[b] += area;
+        const long k = (long)(q->zoom_mant * 16.0 / ldexp(1.0, q->zoom_shift));
+        if (k < kmin) kmin = k; if (k > kmax) kmax = k;
+    }
+    if (++nf % want) return;
+    for (int pass = 0; pass < 2; pass++) {
+        const double *h = pass ? all : win; double tot = 0;
+        for (int b = 0; b < NB; b++) tot += h[b];
+        if (tot <= 0) { fprintf(stderr, "[ZHIST] update %d %s: nothing on screen\n", frames, pass ? "run" : "window"); continue; }
+        const double ps[7] = { 0.02, 0.10, 0.25, 0.50, 0.75, 0.90, 0.98 }; double zp[7]; int j = 0; double acc = 0;
+        for (int b = 0; b < NB && j < 7; b++) { acc += h[b]; while (j < 7 && acc >= ps[j] * tot) zp[j++] = pow(2.0, (b + 0.5) / 8.0); }
+        fprintf(stderr, "[ZHIST] update %d %s (area-weighted z): p2 %.0f p10 %.0f p25 %.0f p50 %.0f p75 %.0f p90 %.0f p98 %.0f; K16 %ld..%ld\n", frames,
+                pass ? "run   " : "window", zp[0], zp[1], zp[2], zp[3], zp[4], zp[5], zp[6], kmin, kmax);
+    }
+    memset(win, 0, sizeof win);
+}
 
 /* ENG_QHIST=<n>: where the game's polygons land horizontally in update n (screen x of each quad's left edge and right edge, 128 px bins from
  * -1024 to 1664) -- how far past the 4:3 window the game's own culling lets the picture go */
@@ -456,6 +501,20 @@ static void draw_text(void)
     glDisable(GL_BLEND);
     glEnable(GL_ALPHA_TEST);
     glDisable(GL_TEXTURE_2D);
+}
+
+/* STEREO: the prepared frame for one eye (-1 left, +1 right, 0 mono). The walk stays mono (ss22_prepare, once per update); the
+ * quads' screen x move to the eye's off-axis projection (geo_hw_quad_eye: a per-vertex shift by depth, Y unchanged), so the sort,
+ * the texture bakes and their per-update budget (keyed on g_eng_frame, which only ss22_prepare advances), the sprite list, the
+ * text layer and the mixer state are the same for both eyes -- the 2D layers come out identical, at zero parallax. */
+void ss22_draw_eye(int vw, int vh, int eye)
+{
+    const int e = geo_hw_stereo_on() ? eye : 0;
+    if (e != qeye) {
+        for (int i = 0; i < qn; i++) geo_hw_quad_eye(&qbuf[i], e);
+        qeye = e;
+    }
+    ss22_draw(vw, vh);
 }
 
 void ss22_draw(int vw, int vh)

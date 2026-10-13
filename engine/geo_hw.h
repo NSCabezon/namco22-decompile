@@ -70,6 +70,13 @@ typedef struct {
      * (namcos22_v.cpp poly3d_drawquad). Super 22 never sets them. */
     int      objectflags;
     int      direct;       /* a quad the master sent straight to the renderer */
+    /* STEREO (tc-visionos PLAN.md, level 2a). Not part of the hardware model and not compared by any gate: the zoom the quad
+     * was projected with, which eye rv/dv's sx16 currently hold (0 = the mono projection, as emitted), and the mono sx16
+     * saved the first time geo_hw_quad_eye moves them, so any eye -- 0 included -- is recomputed from the original. */
+    int32_t  zoom_mant;
+    int      zoom_shift;
+    int      eye;
+    int32_t  mono_rx[10], mono_dx[10];
 } geo_quad;
 
 typedef struct {
@@ -107,5 +114,15 @@ typedef void (*geo_quad_cb)(const geo_quad *q, void *user);
 void geo_hw_set_view(const geo_view *v);
 void geo_hw_object(int32_t code, geo_quad_cb cb, void *user);
 void geo_hw_zoom_from_dspfloat(uint32_t word, int32_t *mant, int *shift);
+
+/* STEREO 3D (off-axis, tc-visionos PLAN.md level 2a). `sep` is the eye separation in view-space units, `zc` the convergence
+ * depth (view-space z drawn at zero parallax), `max_crossed` the largest crossed (in front of the screen) disparity, as a
+ * fraction of the 640 px picture width; nearer polygons keep that disparity. sep <= 0 turns stereo off. Eye e (-1 left,
+ * +1 right) sees screen_x = c + (X - e*sep/2)*K/Z + e*(sep/2)*K/zc (Y unchanged) -- applied per vertex to an emitted quad
+ * by geo_hw_quad_eye, from its depth: x += e*(sep/2)*K*(1/zc - 1/Z). The walk itself stays mono and byte-identical. */
+void geo_hw_set_stereo(float sep, float zc, float max_crossed);
+int  geo_hw_stereo_on(void);
+/* Move q's drawn screen x (rv, and dv when present) to eye `eye`'s projection; eye 0 restores the mono numbers exactly. */
+void geo_hw_quad_eye(geo_quad *q, int eye);
 
 #endif /* GEO_HW_H */

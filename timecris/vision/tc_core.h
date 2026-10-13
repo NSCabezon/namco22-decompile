@@ -41,6 +41,26 @@ void tc_core_stop(void);
 /// game's mixer); row 0 is the top of the picture. Sample it (format-agnostic); the shell decodes sRGB itself.
 void *tc_core_latest_frame(uint64_t *frame_id);
 
+/// STEREO 3D (a 3D-film screen: off-axis parallax from the game's own geometry; tc-visionos PLAN.md level 2a).
+/// `sep` is the eye separation in the game's view-space units ("3D strength"), `zc` the view depth drawn at zero parallax
+/// (on the screen plane; nearer comes out of the screen, farther goes behind it). sep <= 0 turns stereo off: one mono
+/// render per frame, exactly as without stereo. On: each frame is drawn once per eye (polygons only differ in screen x; the
+/// sprites, text and HUD are identical in both eyes, at the screen plane). Takes effect from the next frame; any thread.
+/// Measured (ENG_ZHIST: the area-weighted view depth of the polygons on screen, per 200-600 updates): attract mode median
+/// ~80000 (scene windows 26000..190000), stage 1 in play ~90000..210000; together ~100000. The zoom is fixed: focal length
+/// 772.6 px at 640 px width. The defaults put far objects (z -> infinity) at sep*772.6/zc = 7.7 px = 1.2 % of the width
+/// behind the screen; crossed disparity is capped at TC_STEREO_MAX_CROSSED of the width (reached at z ~ 29000; nearer
+/// polygons keep that much).
+#define TC_STEREO_DEFAULT_SEP   1000.0
+#define TC_STEREO_DEFAULT_ZC    100000.0
+#define TC_STEREO_MAX_CROSSED   0.03
+void tc_core_set_stereo(float sep, float zc);
+/// The newest completed frame as a left/right pair of `id<MTLTexture>` (bridged, unretained; same format and lifetime as
+/// tc_core_latest_frame). Returns the left eye (the mono frame when that frame was rendered without stereo) and sets
+/// *right to the right eye -- or to the same texture as the return value for a mono frame, so `*right == left` means mono.
+/// Both come from one published frame. NULL (and *right = NULL) before the first frame.
+void *tc_core_latest_frame_stereo(uint64_t *frame_id, void **right);
+
 /// Gun position, normalized: u 0..1 left->right, v 0..1 top->bottom of the 4:3 image.
 /// The core maps it to the gun port: x = 68 + u*(694-68), y = 43 + v*(284-43).
 /// on_screen = false means the gun points away from the screen (the ports read 0: off-screen).

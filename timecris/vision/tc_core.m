@@ -31,6 +31,7 @@
 #include "audio_out.h"
 #include "tex_bake.h"
 #include "lift_cpu.h"
+#include "geo_hw.h"
 
 #ifndef ENG_EXTERNAL_HOST
 #error "tc_core.m is the ENG_EXTERNAL_HOST host: build it with -DENG_EXTERNAL_HOST (timecris/CMakeLists.txt, target tc_core)"
@@ -57,10 +58,12 @@ static _Atomic(tc_core_event_fn) ev_fn;
 static _Atomic(void *) ev_user;
 static _Atomic double  fps_now;
 
-/* frames: three output textures; `published` = (frame id << 2) | slot of the newest one the GPU has finished */
-static id<MTLTexture>  outs[3];
+/* frames: three output textures (and three for the right eye, made when stereo is first on); `published` =
+ * (frame id << 3) | (stereo << 2) | slot of the newest one the GPU has finished */
+static id<MTLTexture>  outs[3], outs_r[3];
 static uint64_t        frame_seq;
 static _Atomic uint64_t published;
+static _Atomic float   st_sep, st_zc;                /* tc_core_set_stereo: sep <= 0 = mono */
 
 static void emit(tc_core_event e, int32_t v)
 {
@@ -142,8 +145,25 @@ void *tc_core_latest_frame(uint64_t *frame_id)
 {
     const uint64_t v = atomic_load(&published);
     if (!v) return NULL;
-    if (frame_id) *frame_id = v >> 2;
+    if (frame_id) *frame_id = v >> 3;
     return (__bridge void *)outs[v & 3];
+}
+
+void *tc_core_latest_frame_stereo(uint64_t *frame_id, void **right)
+{
+    const uint64_t v = atomic_load(&published);
+    if (right) *right = NULL;
+    if (!v) return NULL;
+    if (frame_id) *frame_id = v >> 3;
+    if (right) *right = (__bridge void *)((v & 4) ? outs_r[v & 3] : outs[v & 3]);
+    return (__bridge void *)outs[v & 3];
+}
+
+void tc_core_set_stereo(float sep, float zc)
+{
+    if (!(sep > 0.0f) || !(zc > 0.0f)) sep = 0.0f;
+    atomic_store(&st_zc, zc);
+    atomic_store(&st_sep, sep);
 }
 
 void tc_core_set_gun(float u, float v, bool on_screen)
@@ -298,23 +318,42 @@ void ss22_host_shot(const char *path)
     if (eng_gl_write_ppm(path, W, H)) fprintf(stderr, "[HOST] saved %s\n", path);
 }
 
+/* user != NULL: a stereo frame -- the left eye is glmetal target 0 (the `target` passed here), the right eye target 1 */
 static void publish_hook(void *cmd_buffer, void *target, void *user)
 {
-    (void)user;
+    const bool stereo = user != NULL;
     id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)cmd_buffer;
-    id<MTLTexture> src = (__bridge id<MTLTexture>)target;
+    id<MTLTexture> src = (__bridge id<MTLTexture>)(stereo ? glmetal_target_texture_n(0) : target);
     const uint64_t fid = ++frame_seq;
     const unsigned slot = (unsigned)(fid % 3);
     id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
     [b copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake((NSUInteger)W, (NSUInteger)H, 1)
              toTexture:outs[slot] destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+    if (stereo) {
+        id<MTLTexture> rs = (__bridge id<MTLTexture>)glmetal_target_texture_n(1);
+        [b copyFromTexture:rs sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake((NSUInteger)W, (NSUInteger)H, 1)
+                 toTexture:outs_r[slot] destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+    }
     [b endEncoding];
     [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
         (void)c;
-        const uint64_t v = fid << 2 | slot;
+        const uint64_t v = fid << 3 | (stereo ? 4u : 0u) | slot;
         uint64_t cur = atomic_load(&published);
-        while ((cur >> 2) < fid && !atomic_compare_exchange_weak(&published, &cur, v)) {}
+        while ((cur >> 3) < fid && !atomic_compare_exchange_weak(&published, &cur, v)) {}
     }];
+}
+
+/* the right eye's three output textures, like outs[] (on the game thread, the first time stereo is on) */
+static bool make_right_outs(void)
+{
+    if (outs_r[0]) return true;
+    id<MTLTexture> t = (__bridge id<MTLTexture>)glmetal_target_texture();
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:t.pixelFormat width:(NSUInteger)W height:(NSUInteger)H mipmapped:NO];
+    td.usage = MTLTextureUsageShaderRead;
+    td.storageMode = MTLStorageModePrivate;
+    id<MTLDevice> d = (__bridge id<MTLDevice>)glmetal_device();
+    for (int i = 0; i < 3; i++) { outs_r[i] = [d newTextureWithDescriptor:td]; outs_r[i].label = [NSString stringWithFormat:@"tc_core right frame %d", i]; }
+    return outs_r[0] && outs_r[1] && outs_r[2];
 }
 
 /* ENG-style statistics: every 300 frames, the rate and where a frame's time goes */
@@ -346,8 +385,21 @@ bool ss22_host_frame(void)
     if (!host_open) return true;
     const uint64_t t0 = mach_absolute_time();
     hg->input_update();                                       /* ss22_run.c's in_update -> ss22_input_update above */
-    ss22_draw(W, H);
-    glmetal_end_frame(publish_hook, NULL);
+    /* STEREO (tc_core_set_stereo): the same prepared update drawn twice, once per eye into its own glmetal target -- the right eye
+     * into target 1, then the left into target 0 (left as the default target). Off: the mono draw, exactly as before. */
+    const float sep = atomic_load(&st_sep), zc = atomic_load(&st_zc);
+    const bool stereo = sep > 0.0f && zc > 0.0f && make_right_outs();
+    if (stereo) {
+        geo_hw_set_stereo(sep, zc, TC_STEREO_MAX_CROSSED);
+        glmetal_set_target(1);
+        ss22_draw_eye(W, H, +1);
+        glmetal_set_target(0);
+        ss22_draw_eye(W, H, -1);
+    } else {
+        if (geo_hw_stereo_on()) geo_hw_set_stereo(0.0f, 0.0f, 0.0f);
+        ss22_draw_eye(W, H, 0);                               /* = ss22_draw (a quad left at an eye goes back to mono) */
+    }
+    glmetal_end_frame(publish_hook, stereo ? (void *)1 : NULL);
     const uint64_t t1 = mach_absolute_time();
 
     /* the work since the last frame ended (the 68K, the DSP, the sound MCU, the video walk) plus this draw */
@@ -357,9 +409,9 @@ bool ss22_host_frame(void)
     else if (++st_n == 300) {
         const double secs = mt_ms(t1 - st_t0) * 1e-3, fps = st_n / secs;
         atomic_store(&fps_now, fps);
-        fprintf(stderr, "[TC_CORE] frame %u: %.2f fps; work %.2f ms avg %.1f max (draw+encode %.2f avg %.1f max); %u late; %u shots; frame id %llu\n",
+        fprintf(stderr, "[TC_CORE] frame %u: %.2f fps; work %.2f ms avg %.1f max (draw+encode %.2f avg %.1f max); %u late; %u shots; frame id %llu; %s\n",
                 rr_frame, fps, mt_ms(st_work) / st_n, mt_ms(st_work_max), mt_ms(st_draw) / st_n, mt_ms(st_draw_max), st_late, shots,
-                (unsigned long long)(atomic_load(&published) >> 2));
+                (unsigned long long)(atomic_load(&published) >> 3), stereo ? "stereo" : "mono");
         st_t0 = t1; st_n = 0; st_work = st_work_max = st_draw = st_draw_max = 0; st_late = 0;
     }
 

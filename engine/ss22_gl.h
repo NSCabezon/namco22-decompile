@@ -43,6 +43,9 @@ void ss22_gl_set_gun_flash(bool on);      /* false: hide a light-gun game's shot
 void ss22_prepare(const ss22_regs *r);
 /* Draw the prepared frame into the current framebuffer, vw x vh pixels (any number of times after one prepare). */
 void ss22_draw(int vw, int vh);
+/* STEREO 3D: draw the prepared frame for eye -1 (left), +1 (right) or 0 (mono), after geo_hw_set_stereo (engine/geo_hw.h). Only the
+ * polygons' screen x differ between the eyes; with stereo off (or eye 0) this is ss22_draw exactly. Any number of times per prepare. */
+void ss22_draw_eye(int vw, int vh, int eye);
 int  ss22_quads(void);                       /* quads in the prepared frame */
 int  ss22_sprites(void);                     /* sprites in the prepared frame */
 

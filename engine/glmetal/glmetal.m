@@ -224,6 +224,11 @@ static NSMutableDictionary<NSNumber *, id<MTLDepthStencilState>>   *dstates;
 static NSMutableDictionary<NSNumber *, id<MTLSamplerState>>        *samplers;
 
 static int TW, TH, cur;                 /* target size, which of tgt[] is the framebuffer */
+/* STEREO (glmetal_set_target): a second framebuffer -- its own pair (the gamma ping-pong flips within a pair) -- parked here while
+ * the other is active. tgt/cur/tgt_fresh always describe the ACTIVE one; switching swaps them with these. */
+static id<MTLTexture> alt_tgt[2];
+static int alt_cur, cur_set;
+static bool alt_fresh;
 static int bottom_up = 0;
 static bool fetch_ok;
 static bool tgt_fresh, clear_pending, depth_on, depth_fresh, depth_clear_pending;
@@ -927,6 +932,7 @@ bool glmetal_create(int w, int h)
     if (tgt[0] && w == TW && h == TH) return true;
     commit(true);
     TW = w; TH = h; cur = 0;
+    alt_tgt[0] = alt_tgt[1] = nil; alt_cur = 0; cur_set = 0;    /* a second target is made again on demand at the new size */
     const MTLTextureUsage u = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     tgt[0] = new_rgba_tex(w, h, u, MTLStorageModePrivate);
     tgt[1] = fetch_ok ? nil : new_rgba_tex(w, h, u, MTLStorageModePrivate);
@@ -940,6 +946,30 @@ bool glmetal_create(int w, int h)
     S.vp[0] = 0; S.vp[1] = 0; S.vp[2] = w; S.vp[3] = h;
     S.sc[0] = 0; S.sc[1] = 0; S.sc[2] = w; S.sc[3] = h;
     return tgt[0] != nil;
+}
+void glmetal_set_target(int i)
+{
+    i = i ? 1 : 0;
+    if (i == cur_set || !tgt[0]) return;
+    encode_pending();
+    resolve_clears();                                    /* whatever this target still owes goes to it, not to the next one */
+    end_pass();
+    if (!alt_tgt[0]) {
+        const MTLTextureUsage u = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        alt_tgt[0] = new_rgba_tex(TW, TH, u, MTLStorageModePrivate);
+        alt_tgt[1] = fetch_ok ? nil : new_rgba_tex(TW, TH, u, MTLStorageModePrivate);
+        alt_cur = 0; alt_fresh = true;
+    }
+    id<MTLTexture> t0 = tgt[0], t1 = tgt[1]; const int c = cur; const bool f = tgt_fresh;
+    tgt[0] = alt_tgt[0]; tgt[1] = alt_tgt[1]; cur = alt_cur; tgt_fresh = alt_fresh;
+    alt_tgt[0] = t0; alt_tgt[1] = t1; alt_cur = c; alt_fresh = f;
+    cur_set = i;
+}
+int glmetal_current_target(void) { return cur_set; }
+void *glmetal_target_texture_n(int i)
+{
+    if ((i ? 1 : 0) == cur_set) return (__bridge void *)tgt[cur];
+    return alt_tgt[0] ? (__bridge void *)alt_tgt[alt_cur] : NULL;
 }
 int glmetal_width(void) { return TW; }
 int glmetal_height(void) { return TH; }

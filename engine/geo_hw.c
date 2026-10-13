@@ -262,6 +262,7 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
     geo_quad q;
     memset(&q, 0, sizeof q);
     q.color = (uint32_t)color;
+    q.zoom_mant = mant; q.zoom_shift = shift;   /* for geo_hw_quad_eye (stereo); q.eye = 0: mono */
     q.zsort = zsort;
     q.behind = 0;
 
@@ -489,6 +490,57 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
           fprintf(stderr, "[OBJ]   quad zsort %06X color %06X nrv %d  x %d..%d y %d..%d\n", (unsigned)q.zsort, (unsigned)q.color, q.nrv, x0, x1, y0, y1);
       } }
     cb(&q, user);
+}
+
+/* ---- stereo 3D (tc-visionos PLAN.md, level 2a) ------------------------------
+ * Off-axis stereo from the mono projection. For eye e (-1 left, +1 right) at view-space x = e*sep/2, looking parallel, with
+ * the image plane re-centred so depth zc has zero parallax:
+ *     screen_x = c + (X - e*sep/2)*K/Z + e*(sep/2)*K/zc  =  [c + X*K/Z]  +  e*(sep/2)*K*(1/zc - 1/Z)
+ * The bracket is the mono projection proj_sat already made, so an eye is a per-vertex shift by depth alone: no second walk,
+ * no second near clip (z does not depend on the eye), and the guard-band polygon dv (projected in float with the same K)
+ * gets the same shift from its own z. Y is unchanged. One deliberate difference from the pure formula: in front of the
+ * screen the disparity sep*K*(1/Z - 1/zc) grows without bound as Z -> the near plane (z = 1 for a clipped vertex), so 1/Z
+ * is capped where the crossed disparity reaches max_crossed of the picture width; nearer vertices keep that disparity. */
+static struct { int on; double sep, zc, max16; } g_st;
+
+void geo_hw_set_stereo(float sep, float zc, float max_crossed)
+{
+    g_st.on = sep > 0.0f && zc > 0.0f;
+    g_st.sep = sep; g_st.zc = zc;
+    g_st.max16 = (max_crossed > 0.0f ? max_crossed : 0.03) * 640.0 * 16.0;   /* 1/16 px */
+}
+int geo_hw_stereo_on(void) { return g_st.on; }
+
+void geo_hw_quad_eye(geo_quad *q, int eye)
+{
+    if (!g_st.on) eye = 0;
+    if (eye == q->eye) return;
+    if (q->eye == 0) {                                   /* first move: keep the mono numbers to come back to */
+        for (int i = 0; i < q->nrv && i < 10; i++) q->mono_rx[i] = q->rv[i].sx16;
+        for (int i = 0; i < q->ndv && i < 10; i++) q->mono_dx[i] = q->dv[i].sx16;
+    }
+    q->eye = eye;
+    if (eye == 0) {
+        for (int i = 0; i < q->nrv && i < 10; i++) q->rv[i].sx16 = q->mono_rx[i];
+        for (int i = 0; i < q->ndv && i < 10; i++) q->dv[i].sx16 = q->mono_dx[i];
+        return;
+    }
+    const double K = (double)q->zoom_mant * 16.0 / ldexp(1.0, q->zoom_shift);    /* 1/16 px per unit of X/Z */
+    const double half = 0.5 * g_st.sep * eye, inv_c = 1.0 / g_st.zc;
+    const double ak = fabs(K) * g_st.sep;
+    const double inv_max = ak > 0.0 ? inv_c + g_st.max16 / ak : inv_c;            /* the crossed-disparity cap, as a 1/Z */
+    for (int pass = 0; pass < 2; pass++) {
+        const int n = pass ? q->ndv : q->nrv;
+        geo_vert *v = pass ? q->dv : q->rv;
+        const int32_t *mono = pass ? q->mono_dx : q->mono_rx;
+        for (int i = 0; i < n && i < 10; i++) {
+            const int32_t m = mono[i];
+            if (m == INT32_MAX || m == INT32_MIN) { v[i].sx16 = m; continue; }    /* saturated: there is no x to move */
+            double inv = v[i].z > 0 ? 1.0 / (double)v[i].z : inv_max;
+            if (inv > inv_max) inv = inv_max;
+            v[i].sx16 = sat32((int64_t)m + llround(half * K * (inv_c - inv)));
+        }
+    }
 }
 
 /* ---- packet walk (GeoFixed.blit_quads_fixed) --------------------------- */
