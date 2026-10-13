@@ -25,7 +25,7 @@
 #include <sys/stat.h>
 #include "win_startup.h"
 #include "romzip.h"
-#include <SDL2/SDL.h>
+#include <SDL2/SDL.h>           /* ENG_EXTERNAL_HOST (the visionOS core): timecris/vision/nosdl's types-only stand-in */
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -141,11 +141,16 @@ static void on_fatal(const char *why)
     if (rec_f) { fflush(rec_f); fclose(rec_f); rec_f = NULL; }
     ss22_eeprom_save();
     if (!win_scale) return;
+#ifdef ENG_EXTERNAL_HOST
+    fprintf(stderr, "[%s] stopped: the game reached code that has not been translated yet: %s\n", g_ss22_game->tag, why);   /* the shell has no SDL message box */
+    { extern void ss22_host_fatal(const char *why); ss22_host_fatal(why); }       /* the embedding app lives on: the host ends the game thread, not the process */
+#else
     char msg[1024];
     snprintf(msg, sizeof msg, "%s stopped: the game reached code that has not been translated yet.\n\n%s\n\n"
              "Please report it with %s%s%s -- that file replays this session up to the crash.",
              g_ss22_game->name, why, g_ss22_game->logname, fatal_rec ? " and " : "", fatal_rec ? fatal_rec : "");
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, g_ss22_game->name, msg, NULL);
+#endif
 }
 static void rep_read(void)
 {
@@ -501,6 +506,10 @@ int ss22_main(int argc, char **argv, const ss22_game *g)
     /* First run: take the ROMs out of MAME's zip if the ROM folder is incomplete (the shared engine/romzip.c) -- how the installed
      * packages and the Windows build are set up; chips unzipped loose into roms/ work too. */
     if (eng_romzip_missing(rom_dir, g->roms, g->n_roms) && !strcmp(rom_dir, "extracted") && !eng_romzip_missing("roms", g->roms, g->n_roms)) rom_dir = "roms";
+#ifdef ENG_EXTERNAL_HOST
+    /* an embedding app (the visionOS core, timecris/vision) hands over a complete ROM folder: no zip set-up, no SDL message box */
+    if (eng_romzip_missing(rom_dir, g->roms, g->n_roms)) { fprintf(stderr, "%s needs its ROMs: %s is incomplete\n", g->name, rom_dir); return 2; }
+#else
     if (eng_romzip_missing(rom_dir, g->roms, g->n_roms)) {
         char err[512], *base = SDL_GetBasePath();
         const char *zips[8] = { g->zip };
@@ -519,6 +528,7 @@ int ss22_main(int argc, char **argv, const ss22_game *g)
         }
         SDL_free(base);
     }
+#endif
     if (shot_dir) mkdir(shot_dir, 0755);                /* --shots DIR: make the folder */
     if (rd_dir) {                                       /* the renderer gate: MAME's state, no emulation */
         ss22_board_use(g->board);
@@ -535,7 +545,11 @@ int ss22_main(int argc, char **argv, const ss22_game *g)
                                                          * replays never do: a replay plays from the recording's EEPROM and must not save it over the player's */
     if (rep_path && !rep_open(rep_path)) return 2;       /* the recording's EEPROM replaces whatever was loaded */
     static char last_rec[80];                            /* a played session always keeps its latest recording: a crash can be replayed afterwards */
+#ifndef ENG_EXTERNAL_HOST                                /* embedded (visionOS): no per-session recording file growing in the app's container */
     if (win_scale && !rec_path && !rep_path) { snprintf(last_rec, sizeof last_rec, "%s_last.rec", g->lname); rec_path = last_rec; }
+#else
+    (void)last_rec;
+#endif
     if (rec_path) { rec_open(rec_path); if (rec_f) fatal_rec = rec_path; }
     { char lv[64]; snprintf(lv, sizeof lv, "%s_LINK", g->tag); if (!link_spec) link_spec = getenv(lv); }
     if (link_spec && !ss22_link_setup(link_spec, g->tag)) return 2;   /* the cabinet link: after the EEPROM is final (it sets the cabinet id there) */

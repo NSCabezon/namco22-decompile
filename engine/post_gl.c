@@ -132,6 +132,27 @@ static void full_quad(void)
 
 void eng_post_lut(const uint8_t lut[3][256], int vw, int vh)
 {
+#ifdef ENG_GL_METAL
+    /* glmetal: the frame is already a texture -- the table is applied where it lies (no copy). The GL state this
+     * function leaves behind is kept the same. */
+    if (state == 0) { state = 1; fprintf(stderr, "[POST] final colour stage: glmetal\n"); }
+    glDisable(GL_BLEND); glDisable(GL_ALPHA_TEST); glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, vw, vh);
+    glColor4f(1, 1, 1, 1);
+    glmetal_post_lut(lut, vw, vh);
+    return;
+#endif
+#ifdef ENG_GL_ES_BACKEND
+    /* iOS (gl4es): copying the whole frame into a texture costs ~12 ms a frame on Vision Pro, most of the budget.
+     * An identity table changes no pixel, so skip the pass then. */
+    {
+        int identity = 1;
+        for (int c = 0; c < 3 && identity; c++) for (int v = 0; v < 256; v++) if (lut[c][v] != v) { identity = 0; break; }
+        static int said = -1;
+        if (said != identity) { fprintf(stderr, "[POST] gamma table %s\n", identity ? "is identity: pass skipped" : "changes colours: pass applied"); said = identity; }
+        if (identity) return;
+    }
+#endif
     if (state == 0) {
         state = init_shader() ? 1 : -1;
         fprintf(stderr, "[POST] final colour stage: %s\n", state > 0 ? "GLSL" : "pixel map (slow)");

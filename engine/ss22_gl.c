@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <SDL2/SDL.h>
 #include "eng_gl.h"
 #include "eng.h"
@@ -504,6 +505,11 @@ void ss22_draw(int vw, int vh)
 
     /* MERGED Z ORDER, not layers: MAME queues sprites and polygons into the same radix tree keyed on a 24-bit z and
      * walks it far to near, so a sprite can sit behind a polygon (the HUD plate behind the score digits) */
+    /* ENG_DRAWPROF=1: CPU time of each stage below, averaged over 600 frames (where a slow GL -- gl4es on iOS -- spends a frame) */
+    static int prof = -1; if (prof < 0) prof = getenv("ENG_DRAWPROF") != NULL;
+    static double pt[5], pmax[5]; static long pq, ps; static int pn;
+    struct timespec p0, p1, p2, p3, p4, p5;
+    if (prof) clock_gettime(CLOCK_MONOTONIC, &p0);
     int qi = 0, si = 0;
     eng_draw_begin();
     while (qi < qn || si < ni) {
@@ -513,6 +519,7 @@ void ss22_draw(int vw, int vh)
         else eng_draw_quad(&qbuf[qi++], &cfg);
     }
     eng_draw_end();
+    if (prof) { clock_gettime(CLOCK_MONOTONIC, &p1); pq += qn; ps += ni; }
 
     /* the screen fade: blend(rgb, fade, 0xff - factor) over every pixel, background included, i.e. the fade colour at
      * alpha (factor + 1) / 256 */
@@ -526,29 +533,67 @@ void ss22_draw(int vw, int vh)
         glEnd();
         glDisable(GL_BLEND); glEnable(GL_ALPHA_TEST);
     }
+    if (prof) clock_gettime(CLOCK_MONOTONIC, &p2);
 
     draw_text();
+    if (prof) clock_gettime(CLOCK_MONOTONIC, &p3);
 
     /* the mixer's gamma over the whole frame, once, as the hardware does at scanout */
     if (g_fog_valid && g_fog.have_gamma) eng_post_lut(g_fog.gamma, vw, vh);
+    if (prof) {
+        clock_gettime(CLOCK_MONOTONIC, &p4);
+        glFinish();                                          /* what the GPU still owed for this frame */
+        clock_gettime(CLOCK_MONOTONIC, &p5);
+        const struct timespec *a[6] = { &p0, &p1, &p2, &p3, &p4, &p5 };
+        for (int i = 0; i < 5; i++) {
+            const double ms = (a[i + 1]->tv_sec - a[i]->tv_sec) * 1e3 + (a[i + 1]->tv_nsec - a[i]->tv_nsec) * 1e-6;
+            pt[i] += ms; if (ms > pmax[i]) pmax[i] = ms;
+        }
+        if (++pn == 600) {
+            fprintf(stderr, "[DRAWPROF] ms mean/max: quads+sprites %.2f/%.1f  fade %.2f/%.1f  text %.2f/%.1f  post %.2f/%.1f  gpu-finish %.2f/%.1f;"
+                    " %ld quads %ld sprites per frame\n", pt[0] / pn, pmax[0], pt[1] / pn, pmax[1], pt[2] / pn, pmax[2], pt[3] / pn, pmax[3],
+                    pt[4] / pn, pmax[4], pq / pn, ps / pn);
+            memset(pt, 0, sizeof pt); memset(pmax, 0, sizeof pmax); pq = ps = 0; pn = 0;
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ GL context helpers */
 void eng_gl_context_attributes(void)
 {
+#if defined(ENG_GL_METAL)
+    /* glmetal: no GL context to describe (and the visionOS core links no SDL) */
+#elif defined(ENG_GL_ES_BACKEND)
+    /* iOS: an OpenGL ES 2 context, with gl4es providing the 2.1 API on top of it (eng_gl.h) */
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+#else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+#endif
+#ifndef ENG_GL_METAL
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+#endif
 }
 
+#ifndef ENG_GL_METAL
 static SDL_Window   *hl_win;
 static SDL_GLContext hl_ctx;
+#endif
 
 bool eng_gl_open_headless(int w, int h)
 {
-#ifndef _WIN32                                          /* Windows: SDL's offscreen driver makes OpenGL only through EGL, which Windows lacks -- the hidden window below does */
+#ifdef ENG_GL_METAL
+    /* glmetal: the frame is an offscreen Metal texture, no window or GL context at all */
+    if (!glmetal_create(w, h)) { fprintf(stderr, "[GL] no Metal device\n"); return false; }
+    fprintf(stderr, "[GL] headless: %s\n", (const char *)glGetString(GL_RENDERER));
+    return true;
+#else
+#if !defined(_WIN32) && !defined(__APPLE__)             /* Windows/macOS: SDL's offscreen driver makes OpenGL only through EGL, which they lack -- the hidden window below does */
     SDL_SetHint("SDL_VIDEODRIVER", "offscreen");
     setenv("SDL_VIDEODRIVER", "offscreen", 1);         /* SDL < 2.0.22 reads only the environment */
 #endif
@@ -568,6 +613,7 @@ bool eng_gl_open_headless(int w, int h)
     if (!hl_ctx) { fprintf(stderr, "[GL] no context: %s\n", SDL_GetError()); return false; }
     fprintf(stderr, "[GL] headless: %s\n", (const char *)glGetString(GL_RENDERER));
     return true;
+#endif
 }
 
 bool eng_gl_write_ppm(const char *path, int vw, int vh)

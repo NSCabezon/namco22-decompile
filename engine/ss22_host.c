@@ -56,6 +56,12 @@ static const char *genv(const char *name)
 bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)      /* scale <= 0: the saved window size */
 {
     game = g;
+#ifdef ENG_GL_METAL
+    /* glmetal draws into an offscreen Metal texture; presenting it in a window is the visionOS shell's job (P2) */
+    fprintf(stderr, "[HOST] this build (glmetal) has no window yet: run it headless (--shots DIR N)\n");
+    (void)scale; (void)fs;
+    return false;
+#endif
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     eng_ffb_start();                                 /* before the joysticks, or Windows never lists a wheel as haptic (engine/eng_ffb.h) */
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) { fprintf(stderr, "[HOST] SDL: %s\n", SDL_GetError()); return false; }
@@ -63,9 +69,16 @@ bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)      /* scale <
     eng_disp_load(game->cfg_file, scale, fs);                /* the saved display choices; --window N / --fullscreen override */
     if (game->aim) SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");      /* a light gun: the click that focuses the window is still a shot */
     g_eng_disp_light_gun = game->aim != NULL;
+#ifdef ENG_GL_ES_BACKEND
+    /* iOS: the drawable at point size, not Retina pixels -- a quarter of the pixels for gl4es to fill and for the gamma pass to copy
+     * (~12 ms a frame at full Retina size on Vision Pro); plenty for a 640x480 game */
+    const Uint32 hidpi = 0;
+#else
+    const Uint32 hidpi = SDL_WINDOW_ALLOW_HIGHDPI;
+#endif
     win = SDL_CreateWindow(game->title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                            eng_disp_win_w(g_eng_disp.scale), eng_disp_win_h(g_eng_disp.scale),
-                           SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
+                           SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | hidpi |
                            (g_eng_disp.winmode ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
     if (!win) { fprintf(stderr, "[HOST] window: %s\n", SDL_GetError()); return false; }
 #ifdef _WIN32
@@ -75,6 +88,9 @@ bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)      /* scale <
 #endif
     if (!glc) { fprintf(stderr, "[HOST] OpenGL context: %s\n", SDL_GetError()); return false; }
     SDL_GL_MakeCurrent(win, glc);
+#ifdef ENG_GL_ES_BACKEND
+    eng_gl_es_ready(win);
+#endif
     eng_vsync_init(&vs, win, genv("VSYNC"));      /* vsync only on a ~60 Hz display and only while it blocks; <TAG>_VSYNC=0/1 forces it */
     fprintf(stderr, "[HOST] OpenGL: %s; display %d Hz, %s\n", (const char *)glGetString(GL_RENDERER), vs.hz, eng_vsync_mode(&vs));
     eng_gl_warn_software((const char *)glGetString(GL_RENDERER));
@@ -211,7 +227,13 @@ static void present(void)
       } }
     if (pace_log) eng_pace_before_swap(pace_log);
     eng_vsync_capture(&vs, win);                     /* the picture, kept for a frame-rate lock above 60 */
+#ifdef ENG_GL_ES_BACKEND
+    eng_gl_pre_swap();
     SDL_GL_SwapWindow(win);
+    eng_gl_post_swap();
+#else
+    SDL_GL_SwapWindow(win);
+#endif
 }
 static void present_with(eng_pace *p) { pace_log = p; present(); pace_log = NULL; }
 

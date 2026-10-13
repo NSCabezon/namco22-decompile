@@ -1,11 +1,18 @@
-/* audio_out.c -- see audio_out.h. The producer is the emulation thread (per slice), the consumer SDL's audio thread; a
- * lock-free single-producer / single-consumer ring joins them. */
+/* audio_out.c -- see audio_out.h. The producer is the emulation thread (per slice), the consumer the sound card's thread; a
+ * lock-free single-producer / single-consumer ring joins them. The card is SDL's audio device, or with ENG_AUDIO_COREAUDIO
+ * (the visionOS core, which links no SDL) a CoreAudio output unit (RemoteIO; the default output on macOS) pulling the same ring. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <stdatomic.h>
+#ifdef ENG_AUDIO_COREAUDIO
+#include <time.h>
+#include <TargetConditionals.h>
+#include <AudioToolbox/AudioToolbox.h>
+#else
 #include <SDL2/SDL.h>
+#endif
 #include "audio_out.h"
 
 #define OUT_HZ 48000
@@ -21,7 +28,14 @@ static int target_max = OUT_HZ * 140 / 1000;
 #define TARGET atomic_load_explicit(&g_target, memory_order_relaxed)
 static int16_t ring[RING * 2];
 static atomic_uint r_head, r_tail;
+#ifdef ENG_AUDIO_COREAUDIO
+static AudioComponentInstance au;
+static int dev;                               /* 1 while the output unit is open */
+static uint32_t ticks_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint32_t)(t.tv_sec * 1000 + t.tv_nsec / 1000000); }
+#else
 static SDL_AudioDeviceID dev;
+static uint32_t ticks_ms(void) { return SDL_GetTicks(); }
+#endif
 static double rs_pos;                         /* resampler position in input samples */
 static int16_t rs_prev[4];
 static float g_mix[2][4] = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 } };   /* the chip's four outputs into the stereo pair: the front pair alone */
@@ -43,11 +57,9 @@ static inline double soft_limit(double v)
     return v < 0 ? -a : a;
 }
 
-static void audio_cb(void *u, Uint8 *stream, int len)
+/* n stereo frames for the card, from the ring (the card's thread) */
+static void audio_fill(int16_t *o, int n)
 {
-    (void)u;
-    int16_t *o = (int16_t *)stream;
-    int n = len / 4;
     unsigned t = atomic_load_explicit(&r_tail, memory_order_relaxed);
     unsigned h = atomic_load_explicit(&r_head, memory_order_acquire);
     if ((int)(h - t) > 4 * TARGET) { t = h - TARGET; latency_resets++; atomic_fetch_add(&reset_total, 1); }   /* far behind: drop to the target once */
@@ -96,6 +108,57 @@ static void audio_cb(void *u, Uint8 *stream, int len)
     }
 }
 
+#ifdef ENG_AUDIO_COREAUDIO
+static OSStatus au_render(void *ref, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *io)
+{
+    (void)ref; (void)flags; (void)ts; (void)bus;
+    for (UInt32 b = 0; b < io->mNumberBuffers; b++) {      /* one interleaved buffer, as the stream format below asks */
+        if (b == 0) audio_fill((int16_t *)io->mBuffers[0].mData, (int)frames);
+        else memset(io->mBuffers[b].mData, 0, io->mBuffers[b].mDataByteSize);
+    }
+    return noErr;
+}
+
+bool eng_audio_open(void)
+{
+    if (dev) return true;
+    AudioComponentDescription d = { kAudioUnitType_Output,
+#if TARGET_OS_OSX
+                                    kAudioUnitSubType_DefaultOutput,
+#else
+                                    kAudioUnitSubType_RemoteIO,
+#endif
+                                    kAudioUnitManufacturer_Apple, 0, 0 };
+    AudioComponent c = AudioComponentFindNext(NULL, &d);
+    if (!c || AudioComponentInstanceNew(c, &au) != noErr) { fprintf(stderr, "[AUDIO] no CoreAudio output unit\n"); au = NULL; return false; }
+    AudioStreamBasicDescription f = { 0 };
+    f.mSampleRate = OUT_HZ; f.mFormatID = kAudioFormatLinearPCM;
+    f.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+    f.mChannelsPerFrame = 2; f.mBitsPerChannel = 16; f.mFramesPerPacket = 1; f.mBytesPerFrame = 4; f.mBytesPerPacket = 4;
+    AURenderCallbackStruct cb = { au_render, NULL };
+    OSStatus e;
+    if ((e = AudioUnitSetProperty(au, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, sizeof f)) != noErr ||
+        (e = AudioUnitSetProperty(au, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb)) != noErr ||
+        (e = AudioUnitInitialize(au)) != noErr || (e = AudioOutputUnitStart(au)) != noErr) {
+        fprintf(stderr, "[AUDIO] CoreAudio output: error %d\n", (int)e);
+        AudioComponentInstanceDispose(au); au = NULL; return false;
+    }
+    if (getenv("ENG_AUDIO_MAXMS")) { int ms = atoi(getenv("ENG_AUDIO_MAXMS")); if (ms < 60) ms = 60; if (ms > 300) ms = 300; target_max = OUT_HZ * ms / 1000; }
+    if (getenv("ENG_OUTPUT_GAIN")) { g_out_gain = atof(getenv("ENG_OUTPUT_GAIN")); if (g_out_gain < 0) g_out_gain = 0; }
+    Float64 hw = 0; UInt32 sz = sizeof hw;
+    AudioUnitGetProperty(au, kAudioUnitProperty_SampleRate, kAudioUnitScope_Output, 0, &hw, &sz);
+    dev = 1;
+    fprintf(stderr, "[AUDIO] output %d Hz stereo (CoreAudio, device %.0f Hz), gain x%.2f\n", OUT_HZ, hw, g_out_gain);
+    return true;
+}
+#else
+static void audio_cb(void *u, Uint8 *stream, int len)
+{
+    (void)u;
+    audio_fill((int16_t *)stream, len / 4);
+}
+
+
 bool eng_audio_open(void)
 {
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) { fprintf(stderr, "[AUDIO] SDL audio: %s\n", SDL_GetError()); return false; }
@@ -116,6 +179,7 @@ bool eng_audio_open(void)
     fprintf(stderr, "[AUDIO] output %d Hz stereo, %d-sample buffer, gain x%.2f\n", have.freq, have.samples, g_out_gain);
     return true;
 }
+#endif
 
 void eng_audio_set_gain(double gain) { if (gain > 0) g_out_gain = gain; }
 void eng_audio_set_mix(const float m[2][4]) { memcpy(g_mix, m, sizeof g_mix); }
@@ -126,7 +190,7 @@ void eng_audio_push(const int16_t *in4, int n)
     if (!dev || n <= 0) return;
     {   /* a starved sound card is heard as pops: say so in the log, at most every 3 s */
         static uint32_t last_ms, seen_ur, seen_rs;
-        const uint32_t now = SDL_GetTicks();
+        const uint32_t now = ticks_ms();
         if (now - last_ms >= 3000) {
             const uint32_t ur = atomic_load(&ur_total), rs = atomic_load(&reset_total);
             if (last_ms && (ur != seen_ur || rs != seen_rs))
@@ -167,5 +231,10 @@ void eng_audio_push(const int16_t *in4, int n)
 
 void eng_audio_close(void)
 {
+#ifdef ENG_AUDIO_COREAUDIO
+    if (dev) { AudioOutputUnitStop(au); AudioUnitUninitialize(au); AudioComponentInstanceDispose(au); au = NULL; dev = 0;
+               if (underruns) fprintf(stderr, "[AUDIO] %u output underrun samples\n", underruns); }
+#else
     if (dev) { SDL_CloseAudioDevice(dev); dev = 0; if (underruns) fprintf(stderr, "[AUDIO] %u output underrun samples\n", underruns); }
+#endif
 }

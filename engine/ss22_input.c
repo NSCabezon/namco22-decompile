@@ -961,12 +961,28 @@ static void tb_update(const uint8_t *k)
 static uint16_t swallow;                 /* buttons held since the menu closed: masked until released */
 static bool swallow_arm;
 
+#ifdef ENG_TOUCH
+/* A touch screen (iPad, and Apple Vision Pro's iPad mode, where a pinch is a touch) has no right button for a light gun's
+ * pedal. Without a game controller the pedal is held -- out of cover -- unless two or more fingers are down (on Vision Pro:
+ * both hands pinching), which lets it go: duck and reload. A tap still shoots: SDL makes the first finger the left button. */
+static uint32_t touch_pedal_mask(void)
+{
+    for (int j = 0, n = SDL_NumJoysticks(); j < n; j++) if (SDL_IsGameController(j)) return 0;
+    int fingers = 0;
+    for (int i = 0, n = SDL_GetNumTouchDevices(); i < n; i++) fingers += SDL_GetNumTouchFingers(SDL_GetTouchDevice(i));
+    return fingers >= 2 ? 0 : SDL_BUTTON_RMASK;
+}
+#endif
+
 void ss22_input_update(void)
 {
     const uint8_t *k = SDL_GetKeyboardState(NULL);
     uint16_t p = 0;
     int left = 0, right = 0, pk[2] = { 0, 0 };
-    const uint32_t mb = game->light_gun || (game->trackball && SDL_GetRelativeMouseMode()) ? SDL_GetMouseState(NULL, NULL) : 0;   /* a trackball's buttons: only while the mouse is the game's */
+    uint32_t mb = game->light_gun || (game->trackball && SDL_GetRelativeMouseMode()) ? SDL_GetMouseState(NULL, NULL) : 0;   /* a trackball's buttons: only while the mouse is the game's */
+#ifdef ENG_TOUCH
+    if (game->light_gun) mb |= touch_pedal_mask();
+#endif
     if (game->light_gun) aim_update(k);
     if (game->trackball) tb_update(k);
 

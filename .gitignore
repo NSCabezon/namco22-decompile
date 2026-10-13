@@ -95,3 +95,8 @@ __pycache__/
 /cybsled/screenshots/
 *.log
 *.ppm
+
+# visionOS / iOS / macOS port build folders and Finder files
+/timecris/build-*/
+.DS_Store
+/.venv/

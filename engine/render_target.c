@@ -59,6 +59,13 @@ static void *proc(const char *core, const char *ext) {
 
 static int load(void) {
     if (loaded) return loaded > 0;
+#if defined(ENG_GL_ES_BACKEND) || defined(ENG_GL_METAL)
+    /* iOS: the window is SDL's own framebuffer object, not framebuffer 0, and gl4es's blit path is untested
+     * here -- draw straight into the window (the no-FBO fallback below). glmetal has no framebuffer objects: its
+     * target is the render size already. */
+    loaded = -1;
+    return 0;
+#endif
     gen_fb     = (pfn_gen)proc("glGenFramebuffers", "glGenFramebuffersEXT");
     del_fb     = (pfn_del)proc("glDeleteFramebuffers", "glDeleteFramebuffersEXT");
     bind_fb    = (pfn_bind)proc("glBindFramebuffer", "glBindFramebufferEXT");

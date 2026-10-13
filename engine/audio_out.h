@@ -14,7 +14,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-bool eng_audio_open(void);                          /* SDL audio device, stereo 48 kHz; false = silent */
+bool eng_audio_open(void);                          /* the sound card (SDL, or CoreAudio with ENG_AUDIO_COREAUDIO), stereo 48 kHz; false = silent */
 void eng_audio_push(const int16_t *in4, int n);     /* n frames of the chip's four outputs (0/1 = the front pair) */
 /* how the four outputs reach the stereo pair: out[s] = sum of m[s][c] * in[c]. The default is the front pair alone (1 0 0 0 / 0 1 0 0);
  * a cabinet with a speaker of its own on output 2 or 3 (Dirt Dash's road speaker) mixes it in (engine/ss22_snd.c) */

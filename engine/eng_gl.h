@@ -6,7 +6,42 @@
 #ifdef _WIN32
 #include <windows.h>
 #endif
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if defined(ENG_GL_METAL)
+/* glmetal (engine/glmetal): the GL subset the engine uses, implemented on Metal -- no OpenGL library at all (visionOS
+ * has none). The run-time lookups (glActiveTexture, the post shader, framebuffer objects) go to glmetal too, which
+ * answers NULL for shaders and FBOs: render_target.c stays off, and post_gl.c takes glmetal_post_lut. */
+#include "glmetal/gl.h"
+#define SDL_GL_GetProcAddress glmetal_GetProcAddress
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+/* iOS / iPadOS (and Vision Pro's iPad mode): no desktop OpenGL. gl4es implements it over OpenGL ES 2; its
+ * <GL/gl.h> is on the include path. Every GL entry point the engine looks up at run time must come from
+ * gl4es, not from the GLES library SDL loaded, so SDL_GL_GetProcAddress is routed to gl4es (the prototype
+ * matches, so SDL_video.h's declaration may come before or after this). See ios/tc_ios.c. */
 #include <GL/gl.h>
+#include <GL/glext.h>
+#ifndef APIENTRY
+#define APIENTRY
+#endif
+void *eng_gl_proc(const char *name);
+#define SDL_GL_GetProcAddress eng_gl_proc
+void eng_gl_es_ready(void *sdl_window);  /* right after the window's context is current: start gl4es on it */
+void eng_gl_pre_swap(void);              /* around SDL_GL_SwapWindow: gl4es flushes its batches */
+void eng_gl_post_swap(void);
+#define ENG_GL_ES_BACKEND 1
+#elif defined(__APPLE__)
+/* macOS ships legacy OpenGL 2.1 as a framework, deprecated since 10.14 but still present */
+#define GL_SILENCE_DEPRECATION 1
+#include <OpenGL/gl.h>
+#include <OpenGL/glext.h>
+#ifndef APIENTRY
+#define APIENTRY
+#endif
+#else
+#include <GL/gl.h>
+#endif
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE 0x812F
 #endif
