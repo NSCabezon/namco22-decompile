@@ -10,7 +10,8 @@
  *     publishes it when the GPU has completed it, then the pacing to the board's 59.906 Hz (mach_wait_until);
  *   - the shell's setters (any thread) write atomics; the game thread reads them once per frame (ss22_input_update);
  *   - the gun's recoil solenoid (engine/ss22_out.c calls ss22_input_rumble on each rising edge) becomes TC_EVENT_SHOT;
- *   - sound: engine/audio_out.c's CoreAudio backend (ENG_AUDIO_COREAUDIO) pulls the same ring the SDL callback did.
+ *   - sound: engine/audio_out.c's CoreAudio backend (ENG_AUDIO_COREAUDIO) pulls the same ring the SDL callback did -- or, with
+ *     tc_core_set_external_audio, the app pulls it (tc_core_audio_pull / _channel) and plays it from a RealityKit entity.
  * tc_core_stop parks the game thread inside ss22_host_frame (audio closed, EEPROM saved); tc_core_start resumes it.
  */
 #import <Foundation/Foundation.h>
@@ -23,6 +24,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <os/lock.h>
 #include "tc_core.h"
 #include "ss22_game.h"
 #include "ss22_host.h"
@@ -185,6 +187,58 @@ void tc_core_set_event_callback(tc_core_event_fn fn, void *user)
     atomic_store(&ev_fn, fn);
 }
 double tc_core_fps(void) { return atomic_load(&fps_now); }
+
+/* ------------------------------------------------------------------------------------------------ external audio */
+static atomic_ullong audio_pulled;                     /* frames the app has pulled (the stats line shows the rate: ~48000/s) */
+static unsigned long long pulled_seen;                  /* audio_pulled at the last stats line (or the resume) */
+
+void tc_core_set_external_audio(bool on) { eng_audio_set_external(on); }
+
+bool tc_core_audio_pull(float *left, float *right, int frames)
+{
+    if (frames <= 0) return false;
+    atomic_fetch_add_explicit(&audio_pulled, (unsigned long long)frames, memory_order_relaxed);
+    return eng_audio_pull(left, right, frames);
+}
+
+/* The splitter for two per-channel consumers: the stereo frames pulled so far live in sp[][] (frame k at k & (SPLIT-1));
+ * consumed[c] is how far channel c has read. A channel that needs more pulls a block of stereo for both; the other channel's
+ * half waits there for its own callback. If one channel stops asking, the other drops its unread frames rather than block. */
+#define SPLIT 8192                                      /* frames, power of two (170 ms) */
+#define SPLIT_BLOCK 256
+static os_unfair_lock sp_lock = OS_UNFAIR_LOCK_INIT;
+static float sp[2][SPLIT];
+static uint64_t sp_produced, sp_consumed[2];
+static bool sp_live;
+
+bool tc_core_audio_pull_channel(int channel, float *out, int frames)
+{
+    if (frames <= 0 || (channel != 0 && channel != 1)) return false;
+    const int me = channel, other = 1 - channel;
+    os_unfair_lock_lock(&sp_lock);
+    /* this channel far behind the other (it was stopped, or started late): realign it to the newest frames */
+    const uint64_t lag = sp_produced - sp_consumed[me];
+    if (lag > (uint64_t)frames + 2048) sp_consumed[me] = sp_produced - (uint64_t)(frames < SPLIT ? frames : SPLIT);
+    while (frames > 0) {
+        const int n = frames > SPLIT_BLOCK ? SPLIT_BLOCK : frames;
+        while (sp_produced - sp_consumed[me] < (uint64_t)n) {
+            float l[SPLIT_BLOCK], r[SPLIT_BLOCK];
+            sp_live = tc_core_audio_pull(l, r, SPLIT_BLOCK);
+            if (sp_produced + SPLIT_BLOCK - sp_consumed[other] > SPLIT) sp_consumed[other] = sp_produced + SPLIT_BLOCK - SPLIT;
+            for (int i = 0; i < SPLIT_BLOCK; i++) {
+                const unsigned k = (unsigned)((sp_produced + (uint64_t)i) & (SPLIT - 1));
+                sp[0][k] = l[i]; sp[1][k] = r[i];
+            }
+            sp_produced += SPLIT_BLOCK;
+        }
+        for (int i = 0; i < n; i++) out[i] = sp[me][(unsigned)((sp_consumed[me] + (uint64_t)i) & (SPLIT - 1))];
+        sp_consumed[me] += (uint64_t)n;
+        out += n; frames -= n;
+    }
+    const bool live = sp_live;
+    os_unfair_lock_unlock(&sp_lock);
+    return live;
+}
 
 /* ------------------------------------------------------------------------------------------------ the cabinet (ss22_input.h) */
 static const ss22_input_game *ig;
@@ -378,6 +432,7 @@ static void park_if_asked(void)
     audio_on = eng_audio_open();
     if (audio_on) hg->snd_set_output(true);
     next_mt = 0; st_t0 = 0;
+    pulled_seen = atomic_load(&audio_pulled);                 /* the pull rate's window starts now, not at the pause */
 }
 
 bool ss22_host_frame(void)
@@ -409,9 +464,13 @@ bool ss22_host_frame(void)
     else if (++st_n == 300) {
         const double secs = mt_ms(t1 - st_t0) * 1e-3, fps = st_n / secs;
         atomic_store(&fps_now, fps);
-        fprintf(stderr, "[TC_CORE] frame %u: %.2f fps; work %.2f ms avg %.1f max (draw+encode %.2f avg %.1f max); %u late; %u shots; frame id %llu; %s\n",
+        const unsigned long long pulled = atomic_load_explicit(&audio_pulled, memory_order_relaxed);
+        char arate[48] = "";
+        if (pulled != pulled_seen) snprintf(arate, sizeof arate, "; audio pulled at %.0f Hz", (pulled - pulled_seen) / secs);
+        pulled_seen = pulled;
+        fprintf(stderr, "[TC_CORE] frame %u: %.2f fps; work %.2f ms avg %.1f max (draw+encode %.2f avg %.1f max); %u late; %u shots; frame id %llu; %s%s\n",
                 rr_frame, fps, mt_ms(st_work) / st_n, mt_ms(st_work_max), mt_ms(st_draw) / st_n, mt_ms(st_draw_max), st_late, shots,
-                (unsigned long long)(atomic_load(&published) >> 3), stereo ? "stereo" : "mono");
+                (unsigned long long)(atomic_load(&published) >> 3), stereo ? "stereo" : "mono", arate);
         st_t0 = t1; st_n = 0; st_work = st_work_max = st_draw = st_draw_max = 0; st_late = 0;
     }
 

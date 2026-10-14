@@ -34,6 +34,13 @@ your ROMs.
   (mcuout1). That call becomes `TC_EVENT_SHOT`. It fires only for shots the game accepted, not on an empty gun.
 - **Sound.** `engine/audio_out.c` has an `ENG_AUDIO_COREAUDIO` backend: a RemoteIO output unit (the default output
   on macOS) pulls the same lock-free ring that the SDL callback did, at 48 kHz stereo s16.
+- **External sound (the app).** `tc_core_set_external_audio(true)`, called before the first `tc_core_start`, opens
+  no output unit, so visionOS does not place the sound at the app's window. The app pulls the same ring from its own
+  audio thread instead: `tc_core_audio_pull` gives both channels, and `tc_core_audio_pull_channel` serves one emitter per
+  channel through a small splitter. The output is float32 at 48 kHz (`TC_AUDIO_SAMPLE_RATE`). The ring, resampler,
+  limiter and gain are the same as with the output unit. Pulls write silence while the core is paused. The
+  `[TC_CORE]` stats line prints the app's pull rate, which should read about 48000 Hz. To test it on macOS, run
+  `TC_TEST_EXTAUDIO=1 tc_core_test ...`.
 - **Files.** The working directory is set to `Application Support/TimeCrisis`, so `tc_eeprom.nv` is saved there.
   The MAME output socket is off (`SS22_OUT_PORT=0`), and there is no `tc_last.rec`.
 - **Stop and resume.** `tc_core_stop` parks the game thread: audio is closed and the EEPROM saved. A later

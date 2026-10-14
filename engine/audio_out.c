@@ -1,6 +1,7 @@
 /* audio_out.c -- see audio_out.h. The producer is the emulation thread (per slice), the consumer the sound card's thread; a
  * lock-free single-producer / single-consumer ring joins them. The card is SDL's audio device, or with ENG_AUDIO_COREAUDIO
- * (the visionOS core, which links no SDL) a CoreAudio output unit (RemoteIO; the default output on macOS) pulling the same ring. */
+ * (the visionOS core, which links no SDL) a CoreAudio output unit (RemoteIO; the default output on macOS) pulling the same ring --
+ * or, external (eng_audio_set_external), no unit at all: the host's own audio thread pulls the ring with eng_audio_pull. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,7 +16,7 @@
 #endif
 #include "audio_out.h"
 
-#define OUT_HZ 48000
+#define OUT_HZ ENG_AUDIO_RATE
 #define RING 16384                            /* stereo frames, power of two */
 /* THE CUSHION: the ring aims to hold TARGET of sound. It starts at 60 ms; every time the card runs dry it grows by 20 ms, up to 140 ms, and
  * the card waits (silent, already faded out) until the ring holds the new amount. A machine whose frames are sometimes slower than the
@@ -30,7 +31,9 @@ static int16_t ring[RING * 2];
 static atomic_uint r_head, r_tail;
 #ifdef ENG_AUDIO_COREAUDIO
 static AudioComponentInstance au;
-static int dev;                               /* 1 while the output unit is open */
+static int dev;                               /* 1 while the output unit is open (or, external, while the pull is live) */
+static atomic_bool ext_mode;                  /* eng_audio_set_external: the host pulls (eng_audio_pull); no output unit */
+static atomic_bool ext_live;                  /* external and open: eng_audio_pull plays the ring (else silence) */
 static uint32_t ticks_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint32_t)(t.tv_sec * 1000 + t.tv_nsec / 1000000); }
 #else
 static SDL_AudioDeviceID dev;
@@ -119,9 +122,37 @@ static OSStatus au_render(void *ref, AudioUnitRenderActionFlags *flags, const Au
     return noErr;
 }
 
+void eng_audio_set_external(bool on) { atomic_store(&ext_mode, on); }
+
+/* the host's audio thread (external mode): the same audio_fill the output unit's callback runs, as planar float. No lock, no
+ * allocation, no I/O: the ring is lock-free (this is its one consumer) and audio_fill only touches the consumer's state. */
+bool eng_audio_pull(float *left, float *right, int n)
+{
+    if (!atomic_load_explicit(&ext_live, memory_order_acquire)) {
+        for (int i = 0; i < n; i++) left[i] = right[i] = 0.0f;
+        return false;
+    }
+    int16_t tmp[256 * 2];
+    while (n > 0) {
+        const int k = n > 256 ? 256 : n;
+        audio_fill(tmp, k);
+        for (int i = 0; i < k; i++) { left[i] = tmp[2*i] * (1.0f / 32768.0f); right[i] = tmp[2*i+1] * (1.0f / 32768.0f); }
+        left += k; right += k; n -= k;
+    }
+    return true;
+}
+
 bool eng_audio_open(void)
 {
     if (dev) return true;
+    if (atomic_load(&ext_mode)) {                          /* the host plays it: no output unit of ours */
+        if (getenv("ENG_AUDIO_MAXMS")) { int ms = atoi(getenv("ENG_AUDIO_MAXMS")); if (ms < 60) ms = 60; if (ms > 300) ms = 300; target_max = OUT_HZ * ms / 1000; }
+        if (getenv("ENG_OUTPUT_GAIN")) { g_out_gain = atof(getenv("ENG_OUTPUT_GAIN")); if (g_out_gain < 0) g_out_gain = 0; }
+        dev = 1;
+        atomic_store_explicit(&ext_live, true, memory_order_release);
+        fprintf(stderr, "[AUDIO] output %d Hz stereo (external: pulled by the host), gain x%.2f\n", OUT_HZ, g_out_gain);
+        return true;
+    }
     AudioComponentDescription d = { kAudioUnitType_Output,
 #if TARGET_OS_OSX
                                     kAudioUnitSubType_DefaultOutput,
@@ -232,6 +263,8 @@ void eng_audio_push(const int16_t *in4, int n)
 void eng_audio_close(void)
 {
 #ifdef ENG_AUDIO_COREAUDIO
+    if (dev && atomic_load(&ext_mode)) { atomic_store(&ext_live, false); dev = 0;
+                                         if (underruns) fprintf(stderr, "[AUDIO] %u output underrun samples\n", underruns); return; }
     if (dev) { AudioOutputUnitStop(au); AudioUnitUninitialize(au); AudioComponentInstanceDispose(au); au = NULL; dev = 0;
                if (underruns) fprintf(stderr, "[AUDIO] %u output underrun samples\n", underruns); }
 #else

@@ -7,6 +7,8 @@
  * Writes <out_dir>/core_<t>s.ppm at a few moments: attract mode, after coins + start, in play (trigger every 0.5 s, pedal held).
  * TC_TEST_STEREO=1 (or =<sep>,<zc>): stereo on (tc_core_set_stereo, the header's defaults); each moment is then saved as a
  * <name>_L.ppm / <name>_R.ppm pair from tc_core_latest_frame_stereo.
+ * TC_TEST_EXTAUDIO=1: external audio (tc_core_set_external_audio): no sound card; a thread pulls 10 ms per channel every 10 ms
+ * through tc_core_audio_pull_channel, as the app's two emitters do, and the log shows each channel's level and live share.
  */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -16,12 +18,41 @@
 #include <unistd.h>
 #include <limits.h>
 #include <sys/stat.h>
+#include <math.h>
+#include <pthread.h>
 #include "tc_core.h"
 
 static atomic_int shots;
 static void on_event(void *user, tc_core_event e, int32_t v) { (void)user; (void)v; if (e == TC_EVENT_SHOT) atomic_fetch_add(&shots, 1); }
 
 static void sleep_s(double s) { [NSThread sleepForTimeInterval:s]; }
+
+/* TC_TEST_EXTAUDIO: the app's two emitters, as one thread pulling left then right */
+static _Atomic double ext_sq[2]; static atomic_long ext_n, ext_live;
+static void *ext_puller(void *u)
+{
+    (void)u;
+    float buf[480];
+    const double t0 = CFAbsoluteTimeGetCurrent(); long done = 0;     /* paced by the clock, as a sound card is: 48000 frames a second */
+    for (;;) {
+        if ((CFAbsoluteTimeGetCurrent() - t0) * TC_AUDIO_SAMPLE_RATE < done + 480) { usleep(2000); continue; }
+        done += 480;
+        for (int ch = 0; ch < 2; ch++) {
+            const bool live = tc_core_audio_pull_channel(ch, buf, 480);
+            double sq = 0; for (int i = 0; i < 480; i++) sq += (double)buf[i] * buf[i];
+            atomic_store(&ext_sq[ch], atomic_load(&ext_sq[ch]) + sq);
+            if (ch == 0) { atomic_fetch_add(&ext_n, 480); if (live) atomic_fetch_add(&ext_live, 480); }
+        }
+    }
+    return NULL;
+}
+static void ext_report(const char *when)
+{
+    const long n = atomic_exchange(&ext_n, 0), lv = atomic_exchange(&ext_live, 0);
+    const double l = atomic_exchange(&ext_sq[0], 0), r = atomic_exchange(&ext_sq[1], 0);
+    if (n) fprintf(stderr, "[TEST] external audio %s: %ld frames pulled, %.0f%% live, rms L %.4f R %.4f\n", when, n, 100.0 * lv / n,
+                   sqrt(l / n), sqrt(r / n));
+}
 
 static void save_tex(id<MTLDevice> dev, id<MTLCommandQueue> q, const char *dir, const char *name, id<MTLTexture> t, uint64_t fid);
 static void save(id<MTLDevice> dev, id<MTLCommandQueue> q, const char *dir, const char *name)
@@ -71,6 +102,9 @@ int main(int argc, char **argv)
         tc_core_set_event_callback(on_event, NULL);
         { const char *e = getenv("TC_TEST_STEREO"); float sep = TC_STEREO_DEFAULT_SEP, zc = TC_STEREO_DEFAULT_ZC;
           if (e && *e && *e != '0') { if (strchr(e, ',')) sscanf(e, "%f,%f", &sep, &zc); tc_core_set_stereo(sep, zc); fprintf(stderr, "[TEST] stereo sep %.0f zc %.0f\n", sep, zc); } }
+        const char *ea = getenv("TC_TEST_EXTAUDIO");
+        const bool ext = ea && *ea && *ea != '0';
+        if (ext) { tc_core_set_external_audio(true); pthread_t th; pthread_create(&th, NULL, ext_puller, NULL); }
         const int rc = tc_core_start(rom_abs, (__bridge void *)dev, 640, 480);
         fprintf(stderr, "[TEST] tc_core_start -> %d\n", rc);
         if (rc) return 1;
@@ -78,7 +112,9 @@ int main(int argc, char **argv)
         tc_core_set_pedal(true);
         double t = 0;
         sleep_s(20); t += 20; save(dev, q, out_abs, "core_20s_attract");
+        ext_report("attract");
         tc_core_stop(); fprintf(stderr, "[TEST] stopped\n"); sleep_s(1);
+        ext_report("while stopped");
         uint64_t a = 0, b = 0; tc_core_latest_frame(&a); sleep_s(0.5); tc_core_latest_frame(&b);
         fprintf(stderr, "[TEST] while stopped: frame id %llu -> %llu (%s)\n", (unsigned long long)a, (unsigned long long)b, a == b ? "held" : "STILL RUNNING");
         fprintf(stderr, "[TEST] tc_core_start (resume) -> %d\n", tc_core_start(rom_abs, (__bridge void *)dev, 640, 480));
@@ -94,7 +130,7 @@ int main(int argc, char **argv)
             tc_core_set_pedal((k / 12) % 4 != 3);   /* out of cover mostly; duck (reload) now and then */
             tc_core_set_trigger(true); sleep_s(0.1); tc_core_set_trigger(false); sleep_s(0.4);
             t += 0.5; k++;
-            if (k % 40 == 0) { char n[32]; snprintf(n, sizeof n, "core_%.0fs_play", 28 + k * 0.5); save(dev, q, out_abs, n); }
+            if (k % 40 == 0) { char n[32]; snprintf(n, sizeof n, "core_%.0fs_play", 28 + k * 0.5); save(dev, q, out_abs, n); ext_report(n); }
         }
         fprintf(stderr, "[TEST] done: %d shots (TC_EVENT_SHOT) for %d trigger pulls, %.1f fps\n", atomic_load(&shots), k, tc_core_fps());
         tc_core_stop();

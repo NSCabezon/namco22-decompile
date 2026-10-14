@@ -22,4 +22,12 @@ void eng_audio_set_mix(const float m[2][4]);
 void eng_audio_set_volume(int percent);             /* 0..100 */
 void eng_audio_set_gain(double gain);               /* this game's speaker gain (before eng_audio_open); <= 0 keeps the default; ENG_OUTPUT_GAIN wins */
 void eng_audio_close(void);
+
+/* EXTERNAL OUTPUT (ENG_AUDIO_COREAUDIO builds only: the visionOS core, where the app plays the sound from a RealityKit entity).
+ * eng_audio_set_external(true) before eng_audio_open: open then opens NO output unit; the ring, resampler, limiter, gain and volume
+ * are the same, and the host's audio thread pulls the card's side with eng_audio_pull at ENG_AUDIO_RATE. Realtime-safe: no lock,
+ * no allocation, no I/O (single consumer: one thread at a time). Returns false (and writes silence) while the output is closed. */
+#define ENG_AUDIO_RATE 48000
+void eng_audio_set_external(bool on);
+bool eng_audio_pull(float *left, float *right, int n);   /* n frames, planar float32 in -1..1 */
 #endif

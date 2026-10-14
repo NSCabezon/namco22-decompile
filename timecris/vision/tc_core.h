@@ -3,8 +3,8 @@
 // THE SAME FILE lives in the app as ~/Apps/tc-visionos/app/Bridge/tc_core.h: change both together (README.md here).
 // The shell's Swift `GameCore` protocol maps 1:1 onto these calls (app: Sources/Core/CGameCore.swift, TC_REAL_CORE).
 //
-// Threading: tc_core_start spawns the core's own game thread (paced at the board's 59.906 Hz; it owns the audio output
-// and renders with the Metal device it was given). Every other call is thread-safe and non-blocking (tc_core_stop waits
+// Threading: tc_core_start spawns the core's own game thread (paced at the board's 59.906 Hz; it owns the audio output,
+// unless the app pulls it: tc_core_set_external_audio) and renders with the Metal device it was given). Every other call is thread-safe and non-blocking (tc_core_stop waits
 // briefly for the game thread to park); the shell calls them from the main thread once per display frame.
 #ifndef TC_CORE_H
 #define TC_CORE_H
@@ -73,6 +73,23 @@ void tc_core_set_pedal(bool down);
 void tc_core_insert_coin(void);
 /// Time Crisis has no start button: the trigger starts a credited game. This pulses the trigger for 100 ms.
 void tc_core_press_start(void);
+
+/// EXTERNAL AUDIO: the app plays the game's sound itself (a RealityKit audio generator on the screen entity) instead of the
+/// core's own CoreAudio output unit, which visionOS would place at the app's window. Call tc_core_set_external_audio(true)
+/// BEFORE the first tc_core_start; the core then opens no output unit and the app pulls the sound from its audio thread.
+/// The output is identical to the unit's (same ring, resampler, limiter, gain, volume): stereo at TC_AUDIO_SAMPLE_RATE, float32
+/// in -1..1. While the core is paused (tc_core_stop) or before it starts, the pulls write silence and return false.
+/// The pulls are realtime-safe: no allocation, no I/O, no lock the game thread takes (the core's ring is lock-free, single
+/// producer / single consumer). Use ONE of the two pull styles, never both:
+///  - tc_core_audio_pull: one consumer gets both channels (left[], right[]); call it from one thread at a time.
+///  - tc_core_audio_pull_channel: two consumers (a left and a right emitter, each with its own render callback) share one
+///    stream through a small splitter: whichever asks first pulls stereo from the core and the other channel's half waits for
+///    its own callback, so the two stay sample-aligned. A channel that stops asking is dropped, not waited for. The splitter
+///    holds a short os_unfair_lock (a copy of at most a few hundred frames), contended only if the two run on different threads.
+#define TC_AUDIO_SAMPLE_RATE 48000
+void tc_core_set_external_audio(bool on);
+bool tc_core_audio_pull(float *left, float *right, int frames);
+bool tc_core_audio_pull_channel(int channel, float *out, int frames);   ///< channel 0 = left, 1 = right
 
 /// Event callback (called on the game thread; keep it short). NULL clears it.
 void tc_core_set_event_callback(tc_core_event_fn fn, void *user);
