@@ -111,6 +111,26 @@ static void gun_flash_filter(void)
     if (!gun_flash && run && run <= 2) g_fog.screen_fade_factor = 0;
 }
 
+/* PANORAMA: the horizontal field of view of the update's main (full-frame) view, from the zoom most of its full-frame quads were
+ * projected with; an update without such quads keeps the last one. 772.6 px focal length (Time Crisis) is 45.0 degrees. */
+static double view_fov = 0.785398163;
+static void view_fov_update(void)
+{
+    struct { int32_t mant; int shift, n; } z[8]; int nz = 0;
+    for (int i = 0; i < qn; i++) {
+        const geo_quad *q = &qbuf[i];
+        if (q->nrv < 3 || !(q->clip[0] <= 0 && q->clip[1] >= NW - 1) || !q->zoom_mant) continue;
+        int k;
+        for (k = 0; k < nz; k++) if (z[k].mant == q->zoom_mant && z[k].shift == q->zoom_shift) break;
+        if (k == nz) { if (nz == 8) continue; z[nz].mant = q->zoom_mant; z[nz].shift = q->zoom_shift; z[nz].n = 0; nz++; }
+        z[k].n++;
+    }
+    int best = -1;
+    for (int k = 0; k < nz; k++) if (best < 0 || z[k].n > z[best].n) best = k;
+    if (best >= 0) { const double f = geo_hw_hfov(z[best].mant, z[best].shift); if (f > 0.05 && f < 2.5) view_fov = f; }
+}
+double ss22_view_fov(void) { return view_fov; }
+
 void ss22_prepare(const ss22_regs *r)
 {
     if (!frames) {
@@ -154,6 +174,7 @@ void ss22_prepare(const ss22_regs *r)
         eng_quad_sort(qbuf, qn, 0);
     }
     qeye = 0;
+    view_fov_update();
     ss22_zhist_report();
     ss22_qhist_report();
     ss22_cliplog_report();
@@ -517,12 +538,76 @@ void ss22_draw_eye(int vw, int vh, int eye)
     ss22_draw(vw, vh);
 }
 
+/* PANORAMA (tc-visionos PLAN.md): the prepared update seen from a view turned by `yaw` about the vertical axis. Each walked quad is
+ * projected again from its view-space vertices (geo_hw_quad_view), the result sorted by its own zsort (ties as the walk's), once per
+ * update and yaw; an eye then moves its screen x as for the centre. Only the world: quads in a sub-window viewport (an inset, not the
+ * world) are left out, and so are quads wholly outside the turned picture. */
+static struct { float yaw; int frame, n, cap, eye; geo_quad *q; } side[4];
+
+static int side_view(float yaw)
+{
+    int k, old = 0;
+    for (k = 0; k < 4; k++) if (side[k].q && side[k].frame == frames && side[k].yaw == yaw) return k;
+    for (k = 1; k < 4; k++) if (side[k].frame < side[old].frame) old = k;
+    k = old;
+    if (side[k].cap < qn) {
+        geo_quad *nb = realloc(side[k].q, (size_t)(qn ? qn : 1) * sizeof *nb);
+        if (!nb) return -1;
+        side[k].q = nb; side[k].cap = qn;
+    }
+    side[k].yaw = yaw; side[k].frame = frames; side[k].eye = 0;
+    int n = 0;
+    const int32_t M = 64 * 16;                                   /* margin, 1/16 px: the eyes' shift stays well inside it */
+    for (int i = 0; i < qn; i++) {
+        const geo_quad *s = &qbuf[i];
+        if (!(s->clip[0] <= 0 && s->clip[1] >= NW - 1)) continue;          /* a sub-window: not the world */
+        geo_quad *d = &side[k].q[n];
+        if (!geo_hw_quad_view(d, s, yaw) || d->nrv < 3 || d->ndv < 0) continue;
+        int32_t x0 = INT32_MAX, x1 = INT32_MIN, y0 = INT32_MAX, y1 = INT32_MIN;
+        for (int v = 0; v < d->nrv; v++) {
+            if (d->rv[v].sx16 < x0) x0 = d->rv[v].sx16; if (d->rv[v].sx16 > x1) x1 = d->rv[v].sx16;
+            if (d->rv[v].sy16 < y0) y0 = d->rv[v].sy16; if (d->rv[v].sy16 > y1) y1 = d->rv[v].sy16;
+        }
+        if (x1 < -M || x0 > NW * 16 + M || y1 < -M || y0 > NH * 16 + M) continue;   /* wholly outside the turned picture */
+        n++;
+    }
+    side[k].n = n;
+    eng_quad_sort(side[k].q, n, 0);
+    return k;
+}
+
+static void draw_frame(int vw, int vh, const geo_quad *qs, int nq, bool layers2d);
+
+void ss22_draw_view(int vw, int vh, int eye, float yaw, bool layers2d)
+{
+    if (yaw == 0.0f) {
+        if (layers2d) { ss22_draw_eye(vw, vh, eye); return; }
+        const int e = geo_hw_stereo_on() ? eye : 0;
+        if (e != qeye) { for (int i = 0; i < qn; i++) geo_hw_quad_eye(&qbuf[i], e); qeye = e; }
+        draw_frame(vw, vh, qbuf, qn, false);
+        return;
+    }
+    if (!g_eng_pointrom) return;
+    const int k = side_view(yaw);
+    if (k < 0) return;
+    const int e = geo_hw_stereo_on() ? eye : 0;
+    if (e != side[k].eye) { for (int i = 0; i < side[k].n; i++) geo_hw_quad_eye(&side[k].q[i], e); side[k].eye = e; }
+    draw_frame(vw, vh, side[k].q, side[k].n, layers2d);
+}
+
 void ss22_draw(int vw, int vh)
+{
+    draw_frame(vw, vh, qbuf, qn, true);
+}
+
+/* layers2d false: the 3D world alone -- no sprites, no text layer (the background, the polygons, the screen fade and the gamma stay) */
+static void draw_frame(int vw, int vh, const geo_quad *qs, int nq, bool layers2d)
 {
     if (!g_eng_pointrom) return;
     if (!gl_ready) { renderer_texture_init(); gl_ready = true; }
     g_tex_opaque = 1;                       /* the polygon path has no transparent pen */
-    if (prio_any) { memset(prio_mask, 0, sizeof prio_mask); prio_any = false; }
+    const int nspr = layers2d ? ni : 0;
+    if (layers2d && prio_any) { memset(prio_mask, 0, sizeof prio_mask); prio_any = false; }
 
     /* the scene's width: wider than 4:3 widens full-frame viewports (Hor+) */
     const double aspect = (double)vw / vh;
@@ -533,7 +618,7 @@ void ss22_draw(int vw, int vh)
 
     eng_hud_begin(hud_on);                  /* widescreen: how far the HUD goes out (0 = it stays) */
     g_eng_quad_dx = eng_hud_quad_dx;
-    eng_hud_quads_scan(qbuf, qn, hud_cfg ? hud_cfg->quad_band : -1, hud_cfg && hud_cfg->quad_zero_depth);
+    eng_hud_quads_scan(qs, nq, hud_cfg ? hud_cfg->quad_band : -1, hud_cfg && hud_cfg->quad_zero_depth);
 
     glViewport(0, 0, vw, vh);
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
@@ -546,7 +631,7 @@ void ss22_draw(int vw, int vh)
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
     { static int ml = -1; if (ml < 0) ml = getenv("ENG_MIXLOG") != NULL;       /* ENG_MIXLOG=1: the mixer state of every drawn frame (finding what makes a frame white) */
-      if (ml) fprintf(stderr, "[MIX] bg %02X%02X%02X fade %02X%02X%02X x%02X flags %02X quads %d sprites %d\n", g_fog.bg[0], g_fog.bg[1], g_fog.bg[2],
+      if (ml && layers2d) fprintf(stderr, "[MIX] bg %02X%02X%02X fade %02X%02X%02X x%02X flags %02X quads %d sprites %d\n", g_fog.bg[0], g_fog.bg[1], g_fog.bg[2],
                       g_fog.screen_fade[0], g_fog.screen_fade[1], g_fog.screen_fade[2], g_fog.screen_fade_factor, g_fog.mixer_flags, qn, ni); }
     /* the mixer's background, before the gamma; what no layer covers */
     glClearColor(g_fog.bg[0] / 255.0f, g_fog.bg[1] / 255.0f, g_fog.bg[2] / 255.0f, 1.0f);
@@ -565,17 +650,18 @@ void ss22_draw(int vw, int vh)
     /* MERGED Z ORDER, not layers: MAME queues sprites and polygons into the same radix tree keyed on a 24-bit z and
      * walks it far to near, so a sprite can sit behind a polygon (the HUD plate behind the score digits) */
     /* ENG_DRAWPROF=1: CPU time of each stage below, averaged over 600 frames (where a slow GL -- gl4es on iOS -- spends a frame) */
-    static int prof = -1; if (prof < 0) prof = getenv("ENG_DRAWPROF") != NULL;
+    static int prof_env = -1; if (prof_env < 0) prof_env = getenv("ENG_DRAWPROF") != NULL;
+    const int prof = prof_env && layers2d;   /* the profile is the main picture's */
     static double pt[5], pmax[5]; static long pq, ps; static int pn;
     struct timespec p0, p1, p2, p3, p4, p5;
     if (prof) clock_gettime(CLOCK_MONOTONIC, &p0);
     int qi = 0, si = 0;
     eng_draw_begin();
-    while (qi < qn || si < ni) {
-        const uint32_t qz = qi < qn ? (uint32_t)(qbuf[qi].zsort & 0xFFFFFF) : 0;
-        const uint32_t sz = si < ni ? items[si].z : 0;
-        if (si < ni && (qi >= qn || sz >= qz)) { eng_draw_end(); draw_sprite(&items[si++]); eng_draw_resume(); }
-        else eng_draw_quad(&qbuf[qi++], &cfg);
+    while (qi < nq || si < nspr) {
+        const uint32_t qz = qi < nq ? (uint32_t)(qs[qi].zsort & 0xFFFFFF) : 0;
+        const uint32_t sz = si < nspr ? items[si].z : 0;
+        if (si < nspr && (qi >= nq || sz >= qz)) { eng_draw_end(); draw_sprite(&items[si++]); eng_draw_resume(); }
+        else eng_draw_quad(&qs[qi++], &cfg);
     }
     eng_draw_end();
     if (prof) { clock_gettime(CLOCK_MONOTONIC, &p1); pq += qn; ps += ni; }
@@ -594,7 +680,7 @@ void ss22_draw(int vw, int vh)
     }
     if (prof) clock_gettime(CLOCK_MONOTONIC, &p2);
 
-    draw_text();
+    if (layers2d) draw_text();
     if (prof) clock_gettime(CLOCK_MONOTONIC, &p3);
 
     /* the mixer's gamma over the whole frame, once, as the hardware does at scanout */

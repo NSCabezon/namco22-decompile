@@ -172,6 +172,28 @@ void geo_hw_zoom_from_dspfloat(uint32_t word, int32_t *mant, int *shift)
     *shift = s < 0 ? 0 : s;
 }
 
+/* zsort from the quad's depth range (zmin already clamped to >= 0) and its shifts, verbatim from the oracle */
+static int32_t zsort_of(int32_t zmin, int32_t zmax, int32_t flags, int32_t polyshift, int32_t objectshift, int32_t absolute_priority)
+{
+    int32_t zalg = flags & 0x300;
+    int32_t zsort = (zalg == 0x000) ? zmin
+                  : (zalg == 0x100) ? zmax
+                                    : ((zmin + zmax) >> 1);
+    if (zsort > 0x1fffff) zsort = 0x1fffff;
+    int ap = absolute_priority & 7;
+    if (polyshift & 0x200000) zsort = polyshift & 0x1fffff;
+    else { zsort += sext(polyshift, 18); ap += (polyshift & 0x1c0000) >> 18; }
+    if (objectshift & 0x200000) zsort = objectshift & 0x1fffff;
+    else { zsort += sext(objectshift, 18);
+           ap += (objectshift & 0x1c0000) >> 18; }
+    if (zsort < 0) zsort = 0;
+    if (zsort > 0x1fffff) zsort = 0x1fffff;
+    zsort |= (ap & 7) << 21;
+    return zsort;
+}
+
+static void project_quad(geo_quad *q, const int32_t vx[4], const int32_t vy[4], const int32_t vz[4]);
+
 /* ---- one quad ----------------------------------------------------------
  * Direct port of GeoFixed.quad_fixed(). `addr` is the PACKET DATA base,
  * not the raw object address — getting that base wrong is exactly the
@@ -238,20 +260,7 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
     }
 
     if (zmin < 0) zmin = 0;
-    int32_t zalg = flags & 0x300;
-    int32_t zsort = (zalg == 0x000) ? zmin
-                  : (zalg == 0x100) ? zmax
-                                    : ((zmin + zmax) >> 1);
-    if (zsort > 0x1fffff) zsort = 0x1fffff;
-    int ap = g_view.absolute_priority & 7;
-    if (polyshift & 0x200000) zsort = polyshift & 0x1fffff;
-    else { zsort += sext(polyshift, 18); ap += (polyshift & 0x1c0000) >> 18; }
-    if (g_view.objectshift & 0x200000) zsort = g_view.objectshift & 0x1fffff;
-    else { zsort += sext(g_view.objectshift, 18);
-           ap += (g_view.objectshift & 0x1c0000) >> 18; }
-    if (zsort < 0) zsort = 0;
-    if (zsort > 0x1fffff) zsort = 0x1fffff;
-    zsort |= (ap & 7) << 21;
+    const int32_t zsort = zsort_of(zmin, zmax, flags, polyshift, g_view.objectshift, g_view.absolute_priority);
 
     /* projection: 1/16-pixel screen coordinates */
     const int32_t mant = g_view.zoom_mant;
@@ -306,17 +315,13 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
         q.cz_value = zc >> 8;
     }
 
-    /* raw per-vertex projection -- parity with the oracle's scr16 */
+    /* what the projection is made from (geo_hw_quad_view projects it again for a turned view) */
     for (int i = 0; i < 4; i++) {
-        if (vz[i] <= 0) { q.v[i].valid = 0; q.behind = 1; continue; }
-        q.v[i].sx16 = proj_sat((int64_t)cx * 16, vx[i], mant, shift, vz[i], 0);
-        q.v[i].sy16 = proj_sat((int64_t)cy * 16, vy[i], mant, shift, vz[i], 1);
-        q.v[i].z    = vz[i];
-        q.v[i].u    = uv_raw[2 * i]     & 0xfff;
-        q.v[i].v    = uv_raw[2 * i + 1] & 0xfff;
-        q.v[i].bri  = briv[i];
-        q.v[i].valid = 1;
+        q.wx[i] = vx[i]; q.wy[i] = vy[i]; q.wz[i] = vz[i];
+        q.wu[i] = (uint16_t)(uv_raw[2 * i] & 0xfff); q.wv[i] = (uint16_t)(uv_raw[2 * i + 1] & 0xfff); q.wb[i] = briv[i];
     }
+    q.pcx = cx; q.pcy = cy;
+    q.zs_flags = flags; q.zs_poly = polyshift; q.zs_obj = g_view.objectshift; q.zs_ap = g_view.absolute_priority;
 
     {   /* whole-quad UV box, for the live texture cache (see geo_hw.h) */
         int u0 = 0xfff, u1 = 0, v0 = 0xfff, v1 = 0;
@@ -327,6 +332,42 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
         }
         q.uvbox[0] = (uint16_t)u0; q.uvbox[1] = (uint16_t)u1;
         q.uvbox[2] = (uint16_t)v0; q.uvbox[3] = (uint16_t)v1;
+    }
+
+    project_quad(&q, vx, vy, vz);
+    if (q.behind) g_geo_stats.part_clip++;
+    g_geo_stats.emitted++;
+    if (g_geo_stats.zmin_seen == 0 || zmin < g_geo_stats.zmin_seen)
+        g_geo_stats.zmin_seen = zmin;
+    if (zmax > g_geo_stats.zmax_seen) g_geo_stats.zmax_seen = zmax;
+    {                                                     /* ENG_OBJLOG: slave_list.c sets g_objlog_on (defined here: every game links geo_hw.c, Cyber Sled no slave list) */
+      if (g_objlog_on) {
+          int x0 = 1 << 30, x1 = -(1 << 30), y0 = 1 << 30, y1 = -(1 << 30);
+          for (int k = 0; k < q.nrv; k++) { const int x = q.rv[k].sx16 / 16, y = q.rv[k].sy16 / 16;
+              if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+          fprintf(stderr, "[OBJ]   quad zsort %06X color %06X nrv %d  x %d..%d y %d..%d\n", (unsigned)q.zsort, (unsigned)q.color, q.nrv, x0, x1, y0, y1);
+      } }
+    cb(&q, user);
+}
+
+/* The walk's projection of one quad, from its view-space vertices: the raw per-vertex projection (the oracle's scr16), the
+ * near-plane clip and its projection (rv), and the guard-band polygon (dv). Reads the UVs, brightness, centre and zoom from q. */
+static void project_quad(geo_quad *q, const int32_t vx[4], const int32_t vy[4], const int32_t vz[4])
+{
+    const int32_t mant = q->zoom_mant;
+    const int shift = q->zoom_shift;
+    const int32_t cx = q->pcx, cy = q->pcy;
+    q->behind = 0;
+    /* raw per-vertex projection -- parity with the oracle's scr16 */
+    for (int i = 0; i < 4; i++) {
+        if (vz[i] <= 0) { q->v[i].valid = 0; q->behind = 1; continue; }
+        q->v[i].sx16 = proj_sat((int64_t)cx * 16, vx[i], mant, shift, vz[i], 0);
+        q->v[i].sy16 = proj_sat((int64_t)cy * 16, vy[i], mant, shift, vz[i], 1);
+        q->v[i].z    = vz[i];
+        q->v[i].u    = q->wu[i];
+        q->v[i].v    = q->wv[i];
+        q->v[i].bri  = q->wb[i];
+        q->v[i].valid = 1;
     }
 
     double pre_x[6], pre_y[6];   /* the near-clipped polygon, before projection */
@@ -344,9 +385,9 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
         int64_t px_[4], py_[4], pz_[4], pu_[4], pv_[4], pb_[4];
         for (int i = 0; i < 4; i++) {
             px_[i] = vx[i]; py_[i] = vy[i]; pz_[i] = vz[i];
-            pu_[i] = (int64_t)(uv_raw[2 * i]     & 0xfff) << UF;
-            pv_[i] = (int64_t)(uv_raw[2 * i + 1] & 0xfff) << UF;
-            pb_[i] = (int64_t)briv[i] << UF;
+            pu_[i] = (int64_t)(q->wu[i]) << UF;
+            pv_[i] = (int64_t)(q->wv[i]) << UF;
+            pb_[i] = (int64_t)q->wb[i] << UF;
         }
         int64_t cx_[6], cy_[6], cz_[6], cu_[6], cv_[6], cb_[6];
         int n = 0;
@@ -375,20 +416,20 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
                 n++;
             }
         }
-        q.nrv = (n >= 3) ? n : 0;
+        q->nrv = (n >= 3) ? n : 0;
         n_pre = n;
         for (int i = 0; i < n && i < 6; i++) { pre_x[i] = (double)cx_[i]; pre_y[i] = (double)cy_[i]; }
         for (int i = 0; i < n && i < 6; i++) {
-            q.rv[i].sx16 = proj_sat((int64_t)cx * 16, cx_[i], mant, shift, cz_[i], 0);
-            q.rv[i].sy16 = proj_sat((int64_t)cy * 16, cy_[i], mant, shift, cz_[i], 1);
-            q.rv[i].z    = (int32_t)cz_[i];
-            q.rv[i].u    = (uint32_t)(cu_[i] >> UF) & 0xfff;
-            q.rv[i].v    = (uint32_t)(cv_[i] >> UF) & 0xfff;
-            q.rv[i].bri  = (int)(cb_[i] >> UF);
-            q.rv[i].uf   = (int32_t)cu_[i];
-            q.rv[i].vf   = (int32_t)cv_[i];
-            q.rv[i].bf   = (int32_t)cb_[i];
-            q.rv[i].valid = 1;
+            q->rv[i].sx16 = proj_sat((int64_t)cx * 16, cx_[i], mant, shift, cz_[i], 0);
+            q->rv[i].sy16 = proj_sat((int64_t)cy * 16, cy_[i], mant, shift, cz_[i], 1);
+            q->rv[i].z    = (int32_t)cz_[i];
+            q->rv[i].u    = (uint32_t)(cu_[i] >> UF) & 0xfff;
+            q->rv[i].v    = (uint32_t)(cv_[i] >> UF) & 0xfff;
+            q->rv[i].bri  = (int)(cb_[i] >> UF);
+            q->rv[i].uf   = (int32_t)cu_[i];
+            q->rv[i].vf   = (int32_t)cv_[i];
+            q->rv[i].bf   = (int32_t)cb_[i];
+            q->rv[i].valid = 1;
         }
     }
     /* ---- guard-band clip (register row 187) ------------------------------
@@ -402,13 +443,13 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
      * outside the screen (exact: every attribute is linear in 3D), and that
      * polygon is what gets DRAWN. rv is untouched, so the gates still compare
      * the oracle's numbers. */
-    q.ndv = 0;
-    if (q.nrv >= 3) {
+    q->ndv = 0;
+    if (q->nrv >= 3) {
         const int64_t G16 = 4096 * 16;        /* 4096 px either side of centre */
         int need = 0;
-        for (int i = 0; i < q.nrv; i++) {
-            int64_t dx = (int64_t)q.rv[i].sx16 - (int64_t)cx * 16;
-            int64_t dy = (int64_t)q.rv[i].sy16 - (int64_t)cy * 16;
+        for (int i = 0; i < q->nrv; i++) {
+            int64_t dx = (int64_t)q->rv[i].sx16 - (int64_t)cx * 16;
+            int64_t dy = (int64_t)q->rv[i].sy16 - (int64_t)cy * 16;
             if (dx > G16 || dx < -G16 || dy > G16 || dy < -G16) { need = 1; break; }
         }
         if (need) {
@@ -421,12 +462,12 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
                 /* rebuild the near-clipped polygon in float from rv's inputs:
                  * re-derive X, Y from the projected coords would lose them, so
                  * use z and the exact inverse of the projection. */
-                for (int i = 0; i < q.nrv; i++) {
-                    double Z = (double)q.rv[i].z;
-                    double dx = ((double)q.rv[i].sx16 - (double)cx * 16.0);
-                    double dy = -((double)q.rv[i].sy16 - (double)cy * 16.0);
+                for (int i = 0; i < q->nrv; i++) {
+                    double Z = (double)q->rv[i].z;
+                    double dx = ((double)q->rv[i].sx16 - (double)cx * 16.0);
+                    double dy = -((double)q->rv[i].sy16 - (double)cy * 16.0);
                     P[np][0] = dx * Z / K; P[np][1] = dy * Z / K; P[np][2] = Z;
-                    P[np][3] = q.rv[i].uf; P[np][4] = q.rv[i].vf; P[np][5] = q.rv[i].bf;
+                    P[np][3] = q->rv[i].uf; P[np][4] = q->rv[i].vf; P[np][5] = q->rv[i].bf;
                     np++;
                 }
                 (void)UF;
@@ -458,7 +499,7 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
             }
             if (np >= 3 && np <= 10) {
                 for (int i = 0; i < np; i++) {
-                    geo_vert *d = &q.dv[i];
+                    geo_vert *d = &q->dv[i];
                     double Z = P[i][2] < 1.0 ? 1.0 : P[i][2];
                     d->sx16 = (int32_t)llround((double)cx * 16.0 + P[i][0] * K / Z);
                     d->sy16 = (int32_t)llround((double)cy * 16.0 - P[i][1] * K / Z);
@@ -471,25 +512,47 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
                     d->bri = d->bf >> 16;
                     d->valid = 1;
                 }
-                q.ndv = np;
+                q->ndv = np;
             } else if (np < 3) {
-                q.ndv = -1;                     /* entirely outside the guard band */
+                q->ndv = -1;                     /* entirely outside the guard band */
             }
         }
     }
-    if (q.behind) g_geo_stats.part_clip++;
-    g_geo_stats.emitted++;
-    if (g_geo_stats.zmin_seen == 0 || zmin < g_geo_stats.zmin_seen)
-        g_geo_stats.zmin_seen = zmin;
-    if (zmax > g_geo_stats.zmax_seen) g_geo_stats.zmax_seen = zmax;
-    {                                                     /* ENG_OBJLOG: slave_list.c sets g_objlog_on (defined here: every game links geo_hw.c, Cyber Sled no slave list) */
-      if (g_objlog_on) {
-          int x0 = 1 << 30, x1 = -(1 << 30), y0 = 1 << 30, y1 = -(1 << 30);
-          for (int k = 0; k < q.nrv; k++) { const int x = q.rv[k].sx16 / 16, y = q.rv[k].sy16 / 16;
-              if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
-          fprintf(stderr, "[OBJ]   quad zsort %06X color %06X nrv %d  x %d..%d y %d..%d\n", (unsigned)q.zsort, (unsigned)q.color, q.nrv, x0, x1, y0, y1);
-      } }
-    cb(&q, user);
+}
+
+/* ---- panorama (tc-visionos PLAN.md) ----------------------------------------
+ * A view turned by `yaw` about the vertical axis through the eye: the walked quad's view-space vertices rotated, then the walk's
+ * own zsort, near clip, projection and guard band (project_quad) on the result. See geo_hw.h. */
+int geo_hw_quad_view(geo_quad *dst, const geo_quad *src, double yaw)
+{
+    const double c = cos(yaw), s = sin(yaw);
+    int32_t vx[4], vy[4], vz[4];
+    for (int i = 0; i < 4; i++) {
+        const double x = src->wx[i], z = src->wz[i];
+        vx[i] = sat32(llround(x * c - z * s));
+        vy[i] = src->wy[i];
+        vz[i] = sat32(llround(x * s + z * c));
+    }
+    int32_t zmax = vz[0], zmin = vz[0];
+    for (int i = 1; i < 4; i++) {
+        if (vz[i] > zmax) zmax = vz[i];
+        if (vz[i] < zmin) zmin = vz[i];
+    }
+    if (zmax < 0) return 0;                                  /* wholly behind the turned eye */
+    if (dst != src) *dst = *src;
+    if (zmin < 0) zmin = 0;
+    dst->zsort = zsort_of(zmin, zmax, src->zs_flags, src->zs_poly, src->zs_obj, src->zs_ap);
+    { int32_t zc = zmax; if (zc > 0x1fffff) zc = 0x1fffff; dst->cz_value = zc >> 8; }
+    dst->eye = 0;                                            /* mono, as projected */
+    memset(dst->v, 0, sizeof dst->v); memset(dst->rv, 0, sizeof dst->rv); memset(dst->dv, 0, sizeof dst->dv);
+    project_quad(dst, vx, vy, vz);
+    return 1;
+}
+
+double geo_hw_hfov(int32_t zoom_mant, int zoom_shift)
+{
+    const double k = fabs((double)zoom_mant / ldexp(1.0, zoom_shift));     /* pixels per unit of X/Z */
+    return k > 0.0 ? 2.0 * atan(320.0 / k) : 0.0;
 }
 
 /* ---- stereo 3D (tc-visionos PLAN.md, level 2a) ------------------------------

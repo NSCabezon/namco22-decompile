@@ -77,6 +77,14 @@ typedef struct {
     int      zoom_shift;
     int      eye;
     int32_t  mono_rx[10], mono_dx[10];
+    /* PANORAMA (tc-visionos PLAN.md). Not part of the hardware model and not compared by any gate: what the projection was made
+     * from -- the four view-space vertices, their 12-bit UVs and brightness, the projection centre, and the zsort inputs -- so
+     * geo_hw_quad_view can project the same quad again for a view turned about the vertical axis, after the walk. */
+    int32_t  wx[4], wy[4], wz[4];
+    uint16_t wu[4], wv[4];
+    int32_t  wb[4];
+    int32_t  pcx, pcy;
+    int32_t  zs_flags, zs_poly, zs_obj, zs_ap;
 } geo_quad;
 
 typedef struct {
@@ -124,5 +132,16 @@ void geo_hw_set_stereo(float sep, float zc, float max_crossed);
 int  geo_hw_stereo_on(void);
 /* Move q's drawn screen x (rv, and dv when present) to eye `eye`'s projection; eye 0 restores the mono numbers exactly. */
 void geo_hw_quad_eye(geo_quad *q, int eye);
+
+/* PANORAMA (tc-visionos PLAN.md): a view turned by `yaw` radians about the vertical axis through the eye (> 0 = to the right).
+ * `dst` becomes `src` projected for that view: its view-space vertices rotated (x' = x cos - z sin, z' = x sin + z cos), then the
+ * same zsort, near clip, projection and guard band as the walk's, from the rotated depths. Back-face culling needs no redo: the
+ * walk's test is a triple product of the vertices, which a rotation about the eye does not change. The lighting does not change
+ * either (normals and light turn together). Returns 0 when the quad is wholly behind the turned eye (dst is then unusable).
+ * dst comes out mono (eye 0); geo_hw_quad_eye moves it to an eye like any walked quad. The walk itself never calls this, so the
+ * centre view stays byte-identical. A view at yaw = +-geo_hw_hfov(...) shows the world exactly beside the centre's 4:3 picture. */
+int   geo_hw_quad_view(geo_quad *dst, const geo_quad *src, double yaw);
+/* The horizontal field of view, in radians, of a quad's 640 px picture: 2 atan(320 / K), K = zoom_mant / 2^zoom_shift pixels. */
+double geo_hw_hfov(int32_t zoom_mant, int zoom_shift);
 
 #endif /* GEO_HW_H */

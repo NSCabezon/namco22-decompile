@@ -61,6 +61,26 @@ void tc_core_set_stereo(float sep, float zc);
 /// Both come from one published frame. NULL (and *right = NULL) before the first frame.
 void *tc_core_latest_frame_stereo(uint64_t *frame_id, void **right);
 
+/// PANORAMA (tc-visionos PLAN.md): extra views of the game's world beside the 4:3 picture, for flat panels around the player.
+/// Each side view is the same update's 3D world (no HUD, text or sprites; the background, screen fade and gamma stay) seen from a
+/// view turned about the vertical axis through the eye by exactly the picture's horizontal field of view (tc_core_view_fov), so
+/// it shows the world immediately beside the centre picture: a panel hinged at the centre panel's edge and turned by that angle
+/// about the player's head continues it seamlessly. `side_views_each_side` <= 0 turns it off (the frame is exactly as without it);
+/// at most TC_PANORAMA_MAX_SIDE_VIEWS per side. `side_width` x `side_height` is each side view's render size: 0 = 2/3 of the
+/// centre's; the picture is always 4:3 (the height follows the width). With stereo on, each side view is drawn per eye, with the
+/// same off-axis parallax as the centre (in the side view's own frame). Takes effect from the next frame; any thread.
+#define TC_PANORAMA_MAX_SIDE_VIEWS 1
+void tc_core_set_panorama(int side_views_each_side, int side_width, int side_height);
+/// A side view of the newest completed frame, as tc_core_latest_frame_stereo: `index` -1 = the view left of the centre, +1 = the
+/// one right of it. Returns the left eye (or the mono image) and sets *right to the right eye (or the same texture when mono). All
+/// views come from the one published frame that tc_core_latest_frame returns. NULL (and *right = NULL) when that frame was drawn
+/// without the panorama, or for an index out of range.
+void *tc_core_latest_frame_side(int index, uint64_t *frame_id, void **right);
+/// The horizontal field of view, in radians, of the newest frame's 4:3 picture (from the game's zoom: 2 atan(320 / focal px));
+/// it is also the yaw step between the panorama's views. Time Crisis: 45 degrees (0.7854). Place the panels with it: a panel at
+/// distance d from the head is 2 d tan(fov/2) wide, the side panels turned by +-fov about the head.
+float tc_core_view_fov(void);
+
 /// Gun position, normalized: u 0..1 left->right, v 0..1 top->bottom of the 4:3 image.
 /// The core maps it to the gun port: x = 68 + u*(694-68), y = 43 + v*(284-43).
 /// on_screen = false means the gun points away from the screen (the ports read 0: off-screen).

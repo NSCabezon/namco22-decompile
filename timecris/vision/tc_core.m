@@ -61,11 +61,20 @@ static _Atomic(void *) ev_user;
 static _Atomic double  fps_now;
 
 /* frames: three output textures (and three for the right eye, made when stereo is first on); `published` =
- * (frame id << 3) | (stereo << 2) | slot of the newest one the GPU has finished */
+ * (frame id << 4) | (panorama << 3) | (stereo << 2) | slot of the newest one the GPU has finished */
 static id<MTLTexture>  outs[3], outs_r[3];
 static uint64_t        frame_seq;
 static _Atomic uint64_t published;
 static _Atomic float   st_sep, st_zc;                /* tc_core_set_stereo: sep <= 0 = mono */
+/* PANORAMA (tc_core_set_panorama): the side views' output textures, [slot][side: 0 left, 1 right][eye: 0 left or mono, 1 right],
+ * made at the first panorama frame and again if the side size changes (the previous set is kept one more generation, so a texture
+ * the app still holds stays alive); each slot's yaw step (the view's horizontal FOV). glmetal targets: 0/1 the centre's eyes,
+ * 2/3 the left/right side (left eye or mono), 4/5 the same for the right eye. */
+static id<MTLTexture>  outs_side[3][2][2], outs_side_old[3][2][2];
+static int             side_tw, side_th;
+static float           slot_fov[3];
+static atomic_int      pano_n, pano_w, pano_h;
+static _Atomic float   fov_now = 0.785398163f;
 
 static void emit(tc_core_event e, int32_t v)
 {
@@ -147,7 +156,7 @@ void *tc_core_latest_frame(uint64_t *frame_id)
 {
     const uint64_t v = atomic_load(&published);
     if (!v) return NULL;
-    if (frame_id) *frame_id = v >> 3;
+    if (frame_id) *frame_id = v >> 4;
     return (__bridge void *)outs[v & 3];
 }
 
@@ -156,9 +165,38 @@ void *tc_core_latest_frame_stereo(uint64_t *frame_id, void **right)
     const uint64_t v = atomic_load(&published);
     if (right) *right = NULL;
     if (!v) return NULL;
-    if (frame_id) *frame_id = v >> 3;
+    if (frame_id) *frame_id = v >> 4;
     if (right) *right = (__bridge void *)((v & 4) ? outs_r[v & 3] : outs[v & 3]);
     return (__bridge void *)outs[v & 3];
+}
+
+void tc_core_set_panorama(int side_views_each_side, int side_width, int side_height)
+{
+    int n = side_views_each_side;
+    if (n < 0) n = 0;
+    if (n > TC_PANORAMA_MAX_SIDE_VIEWS) n = TC_PANORAMA_MAX_SIDE_VIEWS;
+    atomic_store(&pano_w, side_width > 0 ? side_width : 0);
+    atomic_store(&pano_h, side_height > 0 ? side_height : 0);
+    atomic_store(&pano_n, n);
+}
+
+void *tc_core_latest_frame_side(int index, uint64_t *frame_id, void **right)
+{
+    const uint64_t v = atomic_load(&published);
+    if (right) *right = NULL;
+    if (!v || !(v & 8) || (index != -1 && index != 1)) return NULL;
+    if (frame_id) *frame_id = v >> 4;
+    const unsigned slot = (unsigned)(v & 3), side = index < 0 ? 0 : 1;
+    id<MTLTexture> l = outs_side[slot][side][0];
+    if (right) *right = (__bridge void *)((v & 4) ? outs_side[slot][side][1] : l);
+    return (__bridge void *)l;
+}
+
+float tc_core_view_fov(void)
+{
+    const uint64_t v = atomic_load(&published);
+    if (v && (v & 8)) return slot_fov[v & 3];
+    return atomic_load(&fov_now);
 }
 
 void tc_core_set_stereo(float sep, float zc)
@@ -372,10 +410,11 @@ void ss22_host_shot(const char *path)
     if (eng_gl_write_ppm(path, W, H)) fprintf(stderr, "[HOST] saved %s\n", path);
 }
 
-/* user != NULL: a stereo frame -- the left eye is glmetal target 0 (the `target` passed here), the right eye target 1 */
+/* user: bit 0 a stereo frame -- the left eye is glmetal target 0 (the `target` passed here), the right eye target 1; bit 1 a panorama
+ * frame -- the side views are targets 2 (left) and 3 (right), and with stereo 4 and 5 for the right eye */
 static void publish_hook(void *cmd_buffer, void *target, void *user)
 {
-    const bool stereo = user != NULL;
+    const bool stereo = ((uintptr_t)user & 1) != 0, pano = ((uintptr_t)user & 2) != 0;
     id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)cmd_buffer;
     id<MTLTexture> src = (__bridge id<MTLTexture>)(stereo ? glmetal_target_texture_n(0) : target);
     const uint64_t fid = ++frame_seq;
@@ -388,12 +427,19 @@ static void publish_hook(void *cmd_buffer, void *target, void *user)
         [b copyFromTexture:rs sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake((NSUInteger)W, (NSUInteger)H, 1)
                  toTexture:outs_r[slot] destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
     }
+    if (pano)
+        for (int side = 0; side < 2; side++)
+            for (int eye = 0; eye < (stereo ? 2 : 1); eye++) {
+                id<MTLTexture> ss = (__bridge id<MTLTexture>)glmetal_target_texture_n(2 + side + 2 * eye);
+                [b copyFromTexture:ss sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake((NSUInteger)side_tw, (NSUInteger)side_th, 1)
+                         toTexture:outs_side[slot][side][eye] destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+            }
     [b endEncoding];
     [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
         (void)c;
-        const uint64_t v = fid << 3 | (stereo ? 4u : 0u) | slot;
+        const uint64_t v = fid << 4 | (pano ? 8u : 0u) | (stereo ? 4u : 0u) | slot;
         uint64_t cur = atomic_load(&published);
-        while ((cur >> 3) < fid && !atomic_compare_exchange_weak(&published, &cur, v)) {}
+        while ((cur >> 4) < fid && !atomic_compare_exchange_weak(&published, &cur, v)) {}
     }];
 }
 
@@ -408,6 +454,31 @@ static bool make_right_outs(void)
     id<MTLDevice> d = (__bridge id<MTLDevice>)glmetal_device();
     for (int i = 0; i < 3; i++) { outs_r[i] = [d newTextureWithDescriptor:td]; outs_r[i].label = [NSString stringWithFormat:@"tc_core right frame %d", i]; }
     return outs_r[0] && outs_r[1] && outs_r[2];
+}
+
+/* the side views' output textures at w x h (on the game thread, at the first panorama frame and when the size changes) */
+static bool make_side_outs(int w, int h, bool stereo)
+{
+    if (outs_side[0][0][0] && side_tw == w && side_th == h && (!stereo || outs_side[0][0][1])) return true;
+    id<MTLTexture> t = (__bridge id<MTLTexture>)glmetal_target_texture();
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:t.pixelFormat width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
+    td.usage = MTLTextureUsageShaderRead;
+    td.storageMode = MTLStorageModePrivate;
+    id<MTLDevice> d = (__bridge id<MTLDevice>)glmetal_device();
+    const bool resize = outs_side[0][0][0] && (side_tw != w || side_th != h);
+    for (int i = 0; i < 3; i++)
+        for (int s = 0; s < 2; s++)
+            for (int e = 0; e < 2; e++) {
+                if (resize) outs_side_old[i][s][e] = outs_side[i][s][e];
+                else if (outs_side[i][s][e]) continue;                    /* same size: only the eyes not made yet */
+                if (e == 1 && !stereo) { if (resize) outs_side[i][s][e] = nil; continue; }
+                outs_side[i][s][e] = [d newTextureWithDescriptor:td];
+                outs_side[i][s][e].label = [NSString stringWithFormat:@"tc_core side %c%s frame %d", s ? 'R' : 'L', e ? " right eye" : "", i];
+                if (!outs_side[i][s][e]) return false;
+            }
+    side_tw = w; side_th = h;
+    fprintf(stderr, "[TC_CORE] panorama side views %dx%d\n", w, h);
+    return true;
 }
 
 /* ENG-style statistics: every 300 frames, the rate and where a frame's time goes */
@@ -454,7 +525,33 @@ bool ss22_host_frame(void)
         if (geo_hw_stereo_on()) geo_hw_set_stereo(0.0f, 0.0f, 0.0f);
         ss22_draw_eye(W, H, 0);                               /* = ss22_draw (a quad left at an eye goes back to mono) */
     }
-    glmetal_end_frame(publish_hook, stereo ? (void *)1 : NULL);
+    /* PANORAMA (tc_core_set_panorama): after the centre (which keeps the texture-bake budget's first claim), the world alone turned by
+     * -+ the view's horizontal FOV into targets 2 and 3 (4 and 5: the right eye), 4:3 at the side size; then target 0 again, whose
+     * texture the hook is handed. Off: nothing here, the frame is exactly as before. */
+    bool pano = false;
+    const int pn = atomic_load(&pano_n);
+    const float fov = (float)ss22_view_fov();
+    atomic_store(&fov_now, fov);
+    if (pn > 0) {
+        int sw = atomic_load(&pano_w), sh = atomic_load(&pano_h);
+        if (sw <= 0) sw = (W * 2 + 2) / 3;
+        if (sh <= 0 || sh != (sw * 3 + 2) / 4) sh = (sw * 3 + 2) / 4;    /* 4:3: the side view's picture is the centre's, turned */
+        if (sw > 4096) { sw = 4096; sh = 3072; }
+        if (sw < 64)   { sw = 64; sh = 48; }
+        pano = make_side_outs(sw, sh, stereo);
+        if (pano) {
+            for (int side = 0; side < 2; side++)
+                for (int eye = 0; eye < (stereo ? 2 : 1); eye++) {
+                    const int t = 2 + side + 2 * eye;
+                    glmetal_set_target_size(t, sw, sh);
+                    glmetal_set_target(t);
+                    ss22_draw_view(sw, sh, stereo ? (eye ? +1 : -1) : 0, side ? fov : -fov, false);
+                }
+            glmetal_set_target(0);
+            slot_fov[(frame_seq + 1) % 3] = fov;              /* the slot publish_hook is about to fill */
+        }
+    }
+    glmetal_end_frame(publish_hook, (void *)(uintptr_t)((stereo ? 1u : 0u) | (pano ? 2u : 0u)));
     const uint64_t t1 = mach_absolute_time();
 
     /* the work since the last frame ended (the 68K, the DSP, the sound MCU, the video walk) plus this draw */
@@ -468,9 +565,9 @@ bool ss22_host_frame(void)
         char arate[48] = "";
         if (pulled != pulled_seen) snprintf(arate, sizeof arate, "; audio pulled at %.0f Hz", (pulled - pulled_seen) / secs);
         pulled_seen = pulled;
-        fprintf(stderr, "[TC_CORE] frame %u: %.2f fps; work %.2f ms avg %.1f max (draw+encode %.2f avg %.1f max); %u late; %u shots; frame id %llu; %s%s\n",
+        fprintf(stderr, "[TC_CORE] frame %u: %.2f fps; work %.2f ms avg %.1f max (draw+encode %.2f avg %.1f max); %u late; %u shots; frame id %llu; %s%s%s\n",
                 rr_frame, fps, mt_ms(st_work) / st_n, mt_ms(st_work_max), mt_ms(st_draw) / st_n, mt_ms(st_draw_max), st_late, shots,
-                (unsigned long long)(atomic_load(&published) >> 3), stereo ? "stereo" : "mono", arate);
+                (unsigned long long)(atomic_load(&published) >> 4), stereo ? "stereo" : "mono", pano ? " + panorama" : "", arate);
         st_t0 = t1; st_n = 0; st_work = st_work_max = st_draw = st_draw_max = 0; st_late = 0;
     }
 

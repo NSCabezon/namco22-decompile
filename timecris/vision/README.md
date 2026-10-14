@@ -98,6 +98,28 @@ It saves frames as PPM files and counts `TC_EVENT_SHOT`.
   - `TC_TEST_STEREO=1 tc_core_test` saves pairs.
   - M1 Max: draw+encode is 2.6 ms mono and 3.4 ms stereo.
 
+## Panorama (tc-visionos PLAN.md)
+
+- `tc_core_set_panorama(1, w, h)` adds a side view on each side of the picture; 0 turns it off (the frame is exactly as before).
+  `tc_core_latest_frame_side(-1 | +1, ...)` returns them like `tc_core_latest_frame_stereo` (per eye with stereo on), and
+  `tc_core_view_fov()` the yaw step: the picture's horizontal FOV, `2 atan(320 / K)` with K = zoom_mant / 2^zoom_shift px.
+  Time Crisis's focal length is 772.6 px, so 45.0 degrees. The core takes the zoom most full-frame quads of the update use.
+- Side views are 4:3 at 2/3 of the centre's size by default. They show the 3D world alone: no sprites, no text layer (so no
+  HUD), but the background, the screen fade and the gamma. Quads in a sub-window viewport are left out.
+- How: the walk stays once per update and unchanged. Each walked quad now keeps its view-space vertices, UVs, brightness and
+  zsort inputs (`geo_quad.wx..zs_ap`); `geo_hw_quad_view` rotates them about the vertical axis through the eye and runs the
+  walk's own zsort, near clip, projection and guard band again. Back-face culling is unchanged by a rotation about the eye (a
+  triple product), and so is the lighting. `ss22_draw_view(vw, vh, eye, yaw, layers2d)` builds and sorts the turned quads once
+  per update and yaw, culls the ones outside the turned picture, then draws them; the stereo eye shift applies in the side's
+  own frame. glmetal has up to 8 targets, each with its own size (`glmetal_set_target_size`): 2/3 are the sides, 4/5 their
+  right eyes.
+- Checks: `ENG_PANO=1 tc ... --shots DIR N` also writes `_Lside` / `_Rside` (with `ENG_STEREO`, per eye). The default shots
+  stay byte-identical. With ENG_PANO on, a few centre pixels can differ, because a texture baked at a higher size tier for a
+  side view is reused (tex_bake.c tier fallback). `TC_TEST_PANORAMA=1 tc_core_test` saves the core's side views.
+- Cost (M-series Mac, in play): draw+encode goes from 2.5 to 3.0 ms mono, and from 3.4 to 3.9 ms stereo.
+- Known limit: Time Crisis draws its explosions and effects as sprites, which have no 3D position, so they appear only in the
+  centre picture and are cut at its edge.
+
 ## Notes
 
 - **The simulator GPU** reports the Apple1 family but cannot read the render target. glmetal probes the

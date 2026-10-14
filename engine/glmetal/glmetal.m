@@ -224,11 +224,14 @@ static NSMutableDictionary<NSNumber *, id<MTLDepthStencilState>>   *dstates;
 static NSMutableDictionary<NSNumber *, id<MTLSamplerState>>        *samplers;
 
 static int TW, TH, cur;                 /* target size, which of tgt[] is the framebuffer */
-/* STEREO (glmetal_set_target): a second framebuffer -- its own pair (the gamma ping-pong flips within a pair) -- parked here while
- * the other is active. tgt/cur/tgt_fresh always describe the ACTIVE one; switching swaps them with these. */
-static id<MTLTexture> alt_tgt[2];
-static int alt_cur, cur_set;
-static bool alt_fresh;
+/* STEREO / PANORAMA (glmetal_set_target): more framebuffers -- each its own pair (the gamma ping-pong flips within a pair), its own size
+ * and depth buffer -- parked in slot[] while another is active. tgt/cur/tgt_fresh/TW/TH/depth_tex/depth_fresh always describe the
+ * ACTIVE one; switching saves them into its slot and loads the new one's. Target 0 is glmetal_create's; the others default to its
+ * size (glmetal_set_target_size gives one its own). */
+typedef struct { id<MTLTexture> t[2], depth; int cur, w, h, req_w, req_h; bool fresh, depth_fresh; } tslot;
+static tslot slot[GLMETAL_MAX_TARGETS];
+static int cur_set;
+static int base_w, base_h;              /* target 0's size (glmetal_create) */
 static int bottom_up = 0;
 static bool fetch_ok;
 static bool tgt_fresh, clear_pending, depth_on, depth_fresh, depth_clear_pending;
@@ -929,10 +932,13 @@ bool glmetal_create(int w, int h)
 {
     if (!init_device()) return false;
     if (w < 1 || h < 1) return false;
-    if (tgt[0] && w == TW && h == TH) return true;
+    if (tgt[0] && w == base_w && h == base_h) return true;
     commit(true);
-    TW = w; TH = h; cur = 0;
-    alt_tgt[0] = alt_tgt[1] = nil; alt_cur = 0; cur_set = 0;    /* a second target is made again on demand at the new size */
+    if (cur_set != 0) glmetal_set_target(0);
+    TW = w; TH = h; cur = 0; base_w = w; base_h = h;
+    for (int i = 1; i < GLMETAL_MAX_TARGETS; i++) {               /* the other targets are made again on demand (at the new size, unless their own) */
+        slot[i].t[0] = slot[i].t[1] = slot[i].depth = nil; slot[i].cur = 0;
+    }
     const MTLTextureUsage u = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     tgt[0] = new_rgba_tex(w, h, u, MTLStorageModePrivate);
     tgt[1] = fetch_ok ? nil : new_rgba_tex(w, h, u, MTLStorageModePrivate);
@@ -947,29 +953,57 @@ bool glmetal_create(int w, int h)
     S.sc[0] = 0; S.sc[1] = 0; S.sc[2] = w; S.sc[3] = h;
     return tgt[0] != nil;
 }
+static void make_slot_textures(tslot *t, int w, int h)
+{
+    const MTLTextureUsage u = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    t->t[0] = new_rgba_tex(w, h, u, MTLStorageModePrivate);
+    t->t[1] = fetch_ok ? nil : new_rgba_tex(w, h, u, MTLStorageModePrivate);
+    t->depth = nil;
+    if (depth_on) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
+        d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
+        t->depth = [dev newTextureWithDescriptor:d];
+    }
+    t->cur = 0; t->w = w; t->h = h; t->fresh = true; t->depth_fresh = true;
+}
+
+void glmetal_set_target_size(int i, int w, int h)
+{
+    if (i <= 0 || i >= GLMETAL_MAX_TARGETS) return;
+    if (w < 1 || h < 1) w = h = 0;                                /* back to target 0's size */
+    slot[i].req_w = w; slot[i].req_h = h;
+}
+
 void glmetal_set_target(int i)
 {
-    i = i ? 1 : 0;
-    if (i == cur_set || !tgt[0]) return;
+    if (i < 0 || i >= GLMETAL_MAX_TARGETS) i = 0;
+    if (!tgt[0]) return;
+    const int want_w = i == 0 ? base_w : slot[i].req_w ? slot[i].req_w : base_w;
+    const int want_h = i == 0 ? base_h : slot[i].req_h ? slot[i].req_h : base_h;
+    if (i == cur_set && TW == want_w && TH == want_h) return;
     encode_pending();
     resolve_clears();                                    /* whatever this target still owes goes to it, not to the next one */
     end_pass();
-    if (!alt_tgt[0]) {
-        const MTLTextureUsage u = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-        alt_tgt[0] = new_rgba_tex(TW, TH, u, MTLStorageModePrivate);
-        alt_tgt[1] = fetch_ok ? nil : new_rgba_tex(TW, TH, u, MTLStorageModePrivate);
-        alt_cur = 0; alt_fresh = true;
+    tslot *o = &slot[cur_set];                           /* park the active one */
+    o->t[0] = tgt[0]; o->t[1] = tgt[1]; o->cur = cur; o->fresh = tgt_fresh; o->w = TW; o->h = TH;
+    o->depth = depth_tex; o->depth_fresh = depth_fresh;
+    tslot *n = &slot[i];
+    if (!n->t[0] || n->w != want_w || n->h != want_h) make_slot_textures(n, want_w, want_h);
+    else if (depth_on && !n->depth) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:(NSUInteger)n->w height:(NSUInteger)n->h mipmapped:NO];
+        d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
+        n->depth = [dev newTextureWithDescriptor:d]; n->depth_fresh = true;
     }
-    id<MTLTexture> t0 = tgt[0], t1 = tgt[1]; const int c = cur; const bool f = tgt_fresh;
-    tgt[0] = alt_tgt[0]; tgt[1] = alt_tgt[1]; cur = alt_cur; tgt_fresh = alt_fresh;
-    alt_tgt[0] = t0; alt_tgt[1] = t1; alt_cur = c; alt_fresh = f;
+    tgt[0] = n->t[0]; tgt[1] = n->t[1]; cur = n->cur; tgt_fresh = n->fresh; TW = n->w; TH = n->h;
+    depth_tex = n->depth; depth_fresh = n->depth_fresh;
     cur_set = i;
 }
 int glmetal_current_target(void) { return cur_set; }
 void *glmetal_target_texture_n(int i)
 {
-    if ((i ? 1 : 0) == cur_set) return (__bridge void *)tgt[cur];
-    return alt_tgt[0] ? (__bridge void *)alt_tgt[alt_cur] : NULL;
+    if (i < 0 || i >= GLMETAL_MAX_TARGETS) return NULL;
+    if (i == cur_set) return (__bridge void *)tgt[cur];
+    return slot[i].t[0] ? (__bridge void *)slot[i].t[slot[i].cur] : NULL;
 }
 int glmetal_width(void) { return TW; }
 int glmetal_height(void) { return TH; }

@@ -46,6 +46,13 @@ void ss22_draw(int vw, int vh);
 /* STEREO 3D: draw the prepared frame for eye -1 (left), +1 (right) or 0 (mono), after geo_hw_set_stereo (engine/geo_hw.h). Only the
  * polygons' screen x differ between the eyes; with stereo off (or eye 0) this is ss22_draw exactly. Any number of times per prepare. */
 void ss22_draw_eye(int vw, int vh, int eye);
+/* PANORAMA (tc-visionos PLAN.md): the prepared frame from a view turned by `yaw` radians about the vertical axis through the eye
+ * (> 0 = to the right), for eye -1/+1/0 as ss22_draw_eye. yaw = +-ss22_view_fov() is the picture just beside the 4:3 one. layers2d
+ * false draws the 3D world alone: no sprites and no text layer (the HUD), but the background, the screen fade and the gamma. The
+ * turned quads are made once per update and yaw. yaw 0 with layers2d is ss22_draw_eye exactly. Any number of times per prepare. */
+void ss22_draw_view(int vw, int vh, int eye, float yaw, bool layers2d);
+/* The horizontal field of view (radians) of the prepared update's 640 px picture, from its zoom (Time Crisis: 45 degrees). */
+double ss22_view_fov(void);
 int  ss22_quads(void);                       /* quads in the prepared frame */
 int  ss22_sprites(void);                     /* sprites in the prepared frame */
 

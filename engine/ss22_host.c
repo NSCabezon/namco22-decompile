@@ -155,6 +155,28 @@ void ss22_host_shot(const char *path)
                 free(p);
             }
         }
+        /* ENG_PANO=1: also the panorama's side views of the same update (tc-visionos PLAN.md), the world turned by -+ the view's
+         * horizontal FOV, 3D only, 4:3 at the shot's height, as <name>_Lside.ppm and <name>_Rside.ppm (with ENG_STEREO, each eye
+         * as well: _Lside_L ...). The shots above are unchanged. */
+        static int pano = -1;
+        if (pano < 0) { const char *e = getenv("ENG_PANO"); pano = e && *e && *e != '0'; }
+        if (pano) {
+            const int sw = vh * 4 / 3;
+            const float f = (float)ss22_view_fov();
+            const size_t n = strlen(path);
+            char *p = malloc(n + 16);
+            if (p) {
+                const char *dot = strrchr(path, '.'); const size_t stem = dot ? (size_t)(dot - path) : n;
+                for (int s = -1; s <= 1; s += 2)
+                    for (int e = st ? -1 : 0; e <= (st ? 1 : 0); e += 2) {
+                        snprintf(p, n + 16, "%.*s_%cside%s%s", (int)stem, path, s < 0 ? 'L' : 'R', e < 0 ? "_L" : e > 0 ? "_R" : "", dot ? dot : "");
+                        ss22_draw_view(sw, vh, e, s * f, false);
+                        eng_gl_write_ppm(p, sw, vh);
+                    }
+                fprintf(stderr, "[HOST] panorama sides at +-%.3f rad (%.2f deg)\n", f, f * 57.29578f);
+                free(p);
+            }
+        }
     }
     FILE *chk = fopen(path, "rb");                   /* say so when the folder is missing, rather than "saved" */
     if (chk) { fclose(chk); fprintf(stderr, "[HOST] saved %s\n", path); } else fprintf(stderr, "[HOST] could not write %s (does the folder exist?)\n", path);

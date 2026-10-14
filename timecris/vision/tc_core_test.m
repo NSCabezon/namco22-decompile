@@ -7,6 +7,8 @@
  * Writes <out_dir>/core_<t>s.ppm at a few moments: attract mode, after coins + start, in play (trigger every 0.5 s, pedal held).
  * TC_TEST_STEREO=1 (or =<sep>,<zc>): stereo on (tc_core_set_stereo, the header's defaults); each moment is then saved as a
  * <name>_L.ppm / <name>_R.ppm pair from tc_core_latest_frame_stereo.
+ * TC_TEST_PANORAMA=1 (or =<side width>): the panorama on (tc_core_set_panorama, one view each side); each moment then also saves
+ * <name>_Lside / <name>_Rside (with stereo, _Lside_L ...) from tc_core_latest_frame_side, and the log shows tc_core_view_fov.
  * TC_TEST_EXTAUDIO=1: external audio (tc_core_set_external_audio): no sound card; a thread pulls 10 ms per channel every 10 ms
  * through tc_core_audio_pull_channel, as the app's two emitters do, and the log shows each channel's level and live share.
  */
@@ -55,8 +57,11 @@ static void ext_report(const char *when)
 }
 
 static void save_tex(id<MTLDevice> dev, id<MTLCommandQueue> q, const char *dir, const char *name, id<MTLTexture> t, uint64_t fid);
+static bool test_pano;
+static void save_sides(id<MTLDevice> dev, id<MTLCommandQueue> q, const char *dir, const char *name);
 static void save(id<MTLDevice> dev, id<MTLCommandQueue> q, const char *dir, const char *name)
 {
+    if (test_pano) save_sides(dev, q, dir, name);
     uint64_t fid = 0; void *rp = NULL;
     id<MTLTexture> t = (__bridge id<MTLTexture>)tc_core_latest_frame_stereo(&fid, &rp);
     if (!t) { fprintf(stderr, "[TEST] no frame yet\n"); return; }
@@ -65,6 +70,25 @@ static void save(id<MTLDevice> dev, id<MTLCommandQueue> q, const char *dir, cons
     char n[256];
     snprintf(n, sizeof n, "%s_L", name); save_tex(dev, q, dir, n, t, fid);
     snprintf(n, sizeof n, "%s_R", name); save_tex(dev, q, dir, n, r, fid);
+}
+
+static void save_sides(id<MTLDevice> dev, id<MTLCommandQueue> q, const char *dir, const char *name)
+{
+    for (int s = -1; s <= 1; s += 2) {
+        uint64_t fid = 0; void *rp = NULL;
+        id<MTLTexture> t = (__bridge id<MTLTexture>)tc_core_latest_frame_side(s, &fid, &rp);
+        if (!t) { fprintf(stderr, "[TEST] no panorama side %d in the newest frame\n", s); continue; }
+        id<MTLTexture> r = (__bridge id<MTLTexture>)rp;
+        char n[256];
+        snprintf(n, sizeof n, "%s_%cside", name, s < 0 ? 'L' : 'R');
+        if (r == t) save_tex(dev, q, dir, n, t, fid);
+        else {
+            char m[300];
+            snprintf(m, sizeof m, "%s_L", n); save_tex(dev, q, dir, m, t, fid);
+            snprintf(m, sizeof m, "%s_R", n); save_tex(dev, q, dir, m, r, fid);
+        }
+    }
+    fprintf(stderr, "[TEST] view fov %.4f rad (%.2f deg)\n", tc_core_view_fov(), tc_core_view_fov() * 57.29578);
 }
 
 static void save_tex(id<MTLDevice> dev, id<MTLCommandQueue> q, const char *dir, const char *name, id<MTLTexture> t, uint64_t fid)
@@ -102,6 +126,9 @@ int main(int argc, char **argv)
         tc_core_set_event_callback(on_event, NULL);
         { const char *e = getenv("TC_TEST_STEREO"); float sep = TC_STEREO_DEFAULT_SEP, zc = TC_STEREO_DEFAULT_ZC;
           if (e && *e && *e != '0') { if (strchr(e, ',')) sscanf(e, "%f,%f", &sep, &zc); tc_core_set_stereo(sep, zc); fprintf(stderr, "[TEST] stereo sep %.0f zc %.0f\n", sep, zc); } }
+        { const char *e = getenv("TC_TEST_PANORAMA");
+          if (e && *e && *e != '0') { const int w = atoi(e) > 1 ? atoi(e) : 0; tc_core_set_panorama(1, w, 0); test_pano = true;
+                                      fprintf(stderr, "[TEST] panorama, side width %d\n", w); } }
         const char *ea = getenv("TC_TEST_EXTAUDIO");
         const bool ext = ea && *ea && *ea != '0';
         if (ext) { tc_core_set_external_audio(true); pthread_t th; pthread_create(&th, NULL, ext_puller, NULL); }
