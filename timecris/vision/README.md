@@ -66,6 +66,23 @@ xcodebuild -create-xcframework -library build-xros/libtc_core.a -library build-x
   -output build-vision/TCCore.xcframework
 ```
 
+The xcframework also carries the **iPhone** slices (gun-games-visionos `app/README.md` "iPhone": the same core in the
+iPhone app). `-DTC_CORE_IOS=ON` builds this `tc_core` for iOS instead of the SDL + gl4es iPad app (`ios/`); nothing in the
+sources is iOS-specific (glmetal probes the simulator's missing framebuffer fetch as on visionOS). Build both and pack the
+four slices (the visionOS ones as built above):
+
+```sh
+for v in iosv:iphoneos iossimv:iphonesimulator; do d=${v%%:*}; sr=${v##*:}
+  cmake -S . -B build-$d -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=$sr -DCMAKE_OSX_ARCHITECTURES=arm64 \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 -DTC_ALLOW_CLANG=ON -DTC_CORE_IOS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DPython3_EXECUTABLE=$PY
+  cmake --build build-$d --target tc_core
+done
+rm -rf build-vision/TCCore.xcframework
+xcodebuild -create-xcframework -library build-xros/libtc_core.a -library build-xrsim/libtc_core.a \
+  -library build-iosv/libtc_core.a -library build-iossimv/libtc_core.a -output build-vision/TCCore.xcframework
+```
+
 The app's `project.yml` links `build-vision/TCCore.xcframework`, plus `libz` and AudioToolbox. Rebuild the app after
 you rebuild the xcframework.
 

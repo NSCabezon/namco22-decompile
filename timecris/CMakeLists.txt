@@ -41,8 +41,11 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/gen/tc_c25.c
 set_source_files_properties(gen/tc_c25.c PROPERTIES COMPILE_OPTIONS "-O2;-w")
 
 # visionOS (-DCMAKE_SYSTEM_NAME=visionOS): only the tc_core library the native app links (vision/README.md). No SDL, no OpenGL.
+# iOS with -DTC_CORE_IOS=ON: the same tc_core library for the native iPhone app (gun-games-visionos app/README.md "iPhone"),
+# instead of the SDL + gl4es iPad app below.
+option(TC_CORE_IOS "iOS: build the native app's tc_core library (glmetal, no SDL) instead of the SDL/gl4es iPad app" OFF)
 set(TC_VISION OFF)
-if(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
+if(CMAKE_SYSTEM_NAME STREQUAL "visionOS" OR (IOS AND TC_CORE_IOS))
   set(TC_VISION ON)
 endif()
 
@@ -104,7 +107,7 @@ set(TC_CORE_SRC src/tc_game.c
     ${TC_LIFTED} gen/tc_c25.c)
 
 # THE GAME: the 68K lifted, the master DSP and the sound MCU translated -- no interpreter anywhere (HARD RULE 1/2)
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen/snd.cov AND IOS)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen/snd.cov AND IOS AND NOT TC_VISION)
 # The app bundle carries the ROM folder (extracted/) as a resource: a personal build only, never to be distributed.
 file(GLOB TC_IOS_ROMS ${CMAKE_CURRENT_SOURCE_DIR}/extracted/*)
 set_source_files_properties(${TC_IOS_ROMS} PROPERTIES MACOSX_PACKAGE_LOCATION Resources/extracted)
