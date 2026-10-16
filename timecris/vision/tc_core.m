@@ -13,6 +13,9 @@
  *   - sound: engine/audio_out.c's CoreAudio backend (ENG_AUDIO_COREAUDIO) pulls the same ring the SDL callback did -- or, with
  *     tc_core_set_external_audio, the app pulls it (tc_core_audio_pull / _channel) and plays it from a RealityKit entity.
  * tc_core_stop parks the game thread inside ss22_host_frame (audio closed, EEPROM saved); tc_core_start resumes it.
+ * tc_core_quit ends the game: the parked thread leaves the lifted program (a longjmp back to game_main, see park_if_asked), the
+ * core frees what it made and tc_reset.c puts every variable of the game's code back to its load-time value, so the next
+ * tc_core_start boots the cabinet from power-on exactly as a new process would.
  */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -25,15 +28,20 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <os/lock.h>
+#include <setjmp.h>
+#include "tc_reset_core.h"
 #include "tc_core.h"
 #include "ss22_game.h"
 #include "ss22_host.h"
+#include "ss22_out.h"
 #include "ss22_gl.h"
 #include "eng_gl.h"
 #include "audio_out.h"
 #include "tex_bake.h"
 #include "lift_cpu.h"
 #include "geo_hw.h"
+#include "lift_rt.h"
+#include <stddef.h>
 
 #ifndef ENG_EXTERNAL_HOST
 #error "tc_core.m is the ENG_EXTERNAL_HOST host: build it with -DENG_EXTERNAL_HOST (timecris/CMakeLists.txt, target tc_core)"
@@ -48,6 +56,14 @@ static pthread_t       game_thread;
 static bool            thread_made;
 static int             start_state;                         /* 0 starting, 1 running, -1 failed (guarded by mu) */
 static bool            want_pause, parked;                   /* guarded by mu */
+static bool            want_quit;                            /* tc_core_quit: leave the game from the parked state (guarded by mu) */
+static jmp_buf         quit_jb;                              /* game_main's: where the parked game thread goes on a quit */
+static atomic_bool     ext_audio;                            /* tc_core_set_external_audio, applied again after a quit's reset */
+/* tc_core_quit resets audio_out.c's ring under the app's audio thread: while it does (pull_gate), a pull writes silence instead of
+ * reading the ring; pulls_in counts the pulls inside eng_audio_pull, which the reset waits out. Both sequentially consistent: a pull
+ * either sees the gate closed or is counted before the reset looks. No lock: the pulls stay realtime-safe. */
+static atomic_bool     pull_gate;
+static atomic_int      pulls_in;
 
 static id<MTLDevice>   app_dev;
 static char           *rom_path;
@@ -65,6 +81,7 @@ static _Atomic double  fps_now;
 static id<MTLTexture>  outs[3], outs_r[3];
 static uint64_t        frame_seq;
 static _Atomic uint64_t published;
+static atomic_int      handlers_out;                 /* publish_hook's completion handlers not yet run (tc_core_quit waits them out) */
 static _Atomic float   st_sep, st_zc;                /* tc_core_set_stereo: sep <= 0 = mono */
 /* PANORAMA (tc_core_set_panorama): the side views' output textures, [slot][side: 0 left, 1 right][eye: 0 left or mono, 1 right],
  * made at the first panorama frame and again if the side size changes (the previous set is kept one more generation, so a texture
@@ -89,6 +106,13 @@ static void *game_main(void *arg)
     (void)arg;
     pthread_setname_np("tc.core.game");
     char *argv[] = { "tc", rom_path, "--window", NULL };
+    if (_setjmp(quit_jb)) {                                /* tc_core_quit: park_if_asked jumped here out of the lifted program */
+        /* what the engine's own host does when its window closes (ss22_run.c), minus the exit: the EEPROM (already saved when it
+         * parked), the sound MCU's debug files, the output socket, the input, the host (its audio is already closed) */
+        ss22_eeprom_save(); ss22_snd_close(); ss22_out_close(); ss22_input_close(); ss22_host_close();
+        fprintf(stderr, "[TC_CORE] the game ended at frame %u (tc_core_quit)\n", rr_frame);
+        return NULL;
+    }
     const int rc = tc_main(3, argv);                       /* returns only if the game could not start (entry_reset never returns) */
     fprintf(stderr, "[TC_CORE] the game stopped (%d)\n", rc);
     pthread_mutex_lock(&mu);
@@ -101,6 +125,13 @@ static void *game_main(void *arg)
 /* Application Support/TimeCrisis: the engine writes its EEPROM image (and any settings) to relative paths */
 static void enter_data_dir(void)
 {
+    const char *over = getenv("TC_CORE_DATA_DIR");          /* tests (tc_core_test): a scratch folder instead of the user's */
+    if (over && *over) {
+        mkdir(over, 0755);
+        if (chdir(over) != 0) fprintf(stderr, "[TC_CORE] cannot enter %s\n", over);
+        else fprintf(stderr, "[TC_CORE] data folder %s\n", over);
+        return;
+    }
     @autoreleasepool {
         NSArray<NSString *> *d = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
         NSString *dir = [(d.firstObject ?: NSTemporaryDirectory()) stringByAppendingPathComponent:@"TimeCrisis"];
@@ -149,6 +180,43 @@ void tc_core_stop(void)
         struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl); dl.tv_sec += 1;
         while (!parked) if (pthread_cond_timedwait(&cv, &mu, &dl) != 0) break;
     }
+    pthread_mutex_unlock(&mu);
+}
+
+/* the state of this file that belongs to one game (the rest -- the API's locks, the app's settings, the event callback, the frame id
+ * counter, the audio splitter -- outlives it) */
+static void host_reset(void);
+
+void tc_core_quit(void)
+{
+    pthread_mutex_lock(&mu);
+    if (!thread_made) { pthread_mutex_unlock(&mu); return; }
+    want_quit = true;                                      /* parks first if it is running (audio closed, EEPROM saved), then leaves */
+    want_pause = true;
+    pthread_cond_broadcast(&cv);
+    pthread_mutex_unlock(&mu);
+    pthread_join(game_thread, NULL);                       /* also a thread that ended on a fatal trap, or whose game never started */
+
+    /* nothing of the game runs now: free what it made, then put its variables back to their load-time values */
+    atomic_store(&pull_gate, true);                        /* the app's audio thread stays out of audio_out.c meanwhile */
+    while (atomic_load(&pulls_in) > 0) usleep(100);
+    glmetal_destroy();                                     /* waits for the GPU; releases the device, the targets and every texture */
+    while (atomic_load(&handlers_out) > 0) usleep(100);    /* the last frames' completion handlers */
+    host_reset();
+    size_t blocks = 0;
+    const size_t live = tcg_live_blocks();
+    const bool ok = tcg_reset(&blocks);
+    eng_audio_set_external(atomic_load(&ext_audio));       /* the app's choice, made once before the first start */
+    atomic_store(&pull_gate, false);
+    fprintf(stderr, "[TC_CORE] quit: %zu heap blocks freed (%zu live), %zu + %zu bytes of the game's variables reset%s\n", blocks, live,
+            tcg_data_size(), tcg_bss_size(), ok ? "" : " -- NO LOAD-TIME COPY: the next start is not a cold one");
+
+    pthread_mutex_lock(&mu);
+    thread_made = false;
+    start_state = 0;
+    want_pause = want_quit = parked = false;
+    free(rom_path); rom_path = NULL;
+    app_dev = nil;
     pthread_mutex_unlock(&mu);
 }
 
@@ -230,13 +298,18 @@ double tc_core_fps(void) { return atomic_load(&fps_now); }
 static atomic_ullong audio_pulled;                     /* frames the app has pulled (the stats line shows the rate: ~48000/s) */
 static unsigned long long pulled_seen;                  /* audio_pulled at the last stats line (or the resume) */
 
-void tc_core_set_external_audio(bool on) { eng_audio_set_external(on); }
+void tc_core_set_external_audio(bool on) { atomic_store(&ext_audio, on); eng_audio_set_external(on); }
 
 bool tc_core_audio_pull(float *left, float *right, int frames)
 {
     if (frames <= 0) return false;
     atomic_fetch_add_explicit(&audio_pulled, (unsigned long long)frames, memory_order_relaxed);
-    return eng_audio_pull(left, right, frames);
+    atomic_fetch_add(&pulls_in, 1);
+    bool live = false;
+    if (!atomic_load(&pull_gate)) live = eng_audio_pull(left, right, frames);
+    else for (int i = 0; i < frames; i++) left[i] = right[i] = 0.0f;
+    atomic_fetch_sub(&pulls_in, 1);
+    return live;
 }
 
 /* The splitter for two per-channel consumers: the stereo frames pulled so far live in sp[][] (frame k at k & (SPLIT-1));
@@ -323,11 +396,21 @@ void ss22_input_neutral(void)
 
 static float clamp01(float x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
 
+static unsigned seen_presses, seen_starts, seen_coins;       /* the app's counts this game has taken (a quit lines them up: input_reset) */
+static int trig_hold, start_hold, coin_frames;
+
+/* a new game takes none of the presses, starts and coins the app made before it: they belong to the game that was quit */
+static void input_reset(void)
+{
+    seen_presses = atomic_load(&trig_presses); seen_starts = atomic_load(&starts_pending); seen_coins = atomic_load(&coins_pending);
+    trig_hold = start_hold = coin_frames = 0;
+    ig = NULL; bit_trigger = bit_pedal = bit_coin = 0;
+    shots = 0;
+}
+
 void ss22_input_update(void)
 {
     if (!ig) return;
-    static unsigned seen_presses, seen_starts, seen_coins;
-    static int trig_hold, start_hold, coin_frames;
     uint16_t p = 0;
 
     const unsigned pr = atomic_load(&trig_presses);
@@ -370,6 +453,68 @@ static void signal_started(int st)
     pthread_mutex_unlock(&mu);
 }
 
+/* TC_CORE_HASHLOG=<file>[:<frames>] (tests: tc_core_test TC_TEST_QUIT; off by default): for the first <frames> (600) frames of every
+ * game (session) this process boots, one line per frame with a hash of the board's memory (g_ss22 from work RAM on, g_hw, the 68K
+ * register file) taken at the frame boundary, and one with a hash of the published picture's pixels. Two sessions are the same game
+ * when their lines are equal frame for frame. */
+static FILE *hl_f;
+static int hl_max = 600, hl_n;
+static int hl_session = -1;
+static os_unfair_lock hl_lock = OS_UNFAIR_LOCK_INIT;
+static uint64_t hl_hash(uint64_t h, const void *p, size_t n)
+{
+    const uint8_t *b = p;
+    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001B3ull; }
+    return h;
+}
+static void hl_session_start(void)
+{
+    if (hl_session < 0) {
+        const char *e = getenv("TC_CORE_HASHLOG");
+        if (!e || !*e) { hl_session = 0; return; }
+        char path[1024]; snprintf(path, sizeof path, "%s", e);
+        char *c = strrchr(path, ':');
+        if (c) { *c = 0; if (atoi(c + 1) > 0) hl_max = atoi(c + 1); }
+        hl_f = fopen(path, "w");
+        if (hl_f) fprintf(stderr, "[TC_CORE] hash log %s, %d frames a session\n", path, hl_max);
+        hl_session = 0;
+    } else hl_session++;
+    hl_n = 0;
+}
+static bool hl_frame(void)                                   /* game thread, at the frame boundary: true if this frame is logged */
+{
+    if (!hl_f || hl_n >= hl_max) return false;
+    hl_n++;
+    uint64_t h = 0xCBF29CE484222325ull;
+    h = hl_hash(h, g_ss22.wram, sizeof g_ss22 - offsetof(ss22_sys_t, wram));
+    h = hl_hash(h, &g_hw, sizeof g_hw);
+    h = hl_hash(h, R, RR_REGSPACE);
+    os_unfair_lock_lock(&hl_lock);
+    fprintf(hl_f, "S%d F%d ram rr=%u %016llx\n", hl_session, hl_n, rr_frame, (unsigned long long)h);
+    os_unfair_lock_unlock(&hl_lock);
+    return true;
+}
+/* the frame's pixels, read back in the publishing command buffer (target 0, the left eye or mono) */
+static void hl_pixels(id<MTLCommandBuffer> cb, id<MTLBlitCommandEncoder> b, id<MTLTexture> src)
+{
+    id<MTLBuffer> buf = [src.device newBufferWithLength:(NSUInteger)W * H * 4 options:MTLResourceStorageModeShared];
+    if (!buf) return;
+    [b copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake((NSUInteger)W, (NSUInteger)H, 1)
+              toBuffer:buf destinationOffset:0 destinationBytesPerRow:(NSUInteger)W * 4 destinationBytesPerImage:(NSUInteger)W * H * 4];
+    const int sess = hl_session, n = hl_n;
+    atomic_fetch_add(&handlers_out, 1);
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
+        (void)c;
+        const uint64_t h = hl_hash(0xCBF29CE484222325ull, buf.contents, (size_t)W * H * 4);
+        os_unfair_lock_lock(&hl_lock);
+        fprintf(hl_f, "S%d F%d px %016llx\n", sess, n, (unsigned long long)h);
+        fflush(hl_f);
+        os_unfair_lock_unlock(&hl_lock);
+        atomic_fetch_sub(&handlers_out, 1);
+    }];
+}
+static bool hl_this_frame;
+
 bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)
 {
     (void)scale; (void)fs;
@@ -392,6 +537,7 @@ bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)
     mach_timebase_info(&tb);
     period_mt = (uint64_t)(1e9 / 59.906 * tb.denom / tb.numer);
     next_mt = 0;
+    hl_session_start();
     host_open = true;
     signal_started(1);
     return true;
@@ -434,12 +580,15 @@ static void publish_hook(void *cmd_buffer, void *target, void *user)
                 [b copyFromTexture:ss sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake((NSUInteger)side_tw, (NSUInteger)side_th, 1)
                          toTexture:outs_side[slot][side][eye] destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
             }
+    if (hl_this_frame) hl_pixels(cb, b, src);
     [b endEncoding];
+    atomic_fetch_add(&handlers_out, 1);
     [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
         (void)c;
         const uint64_t v = fid << 4 | (pano ? 8u : 0u) | (stereo ? 4u : 0u) | slot;
         uint64_t cur = atomic_load(&published);
         while ((cur >> 4) < fid && !atomic_compare_exchange_weak(&published, &cur, v)) {}
+        atomic_fetch_sub(&handlers_out, 1);
     }];
 }
 
@@ -496,7 +645,15 @@ static void park_if_asked(void)
     pthread_mutex_lock(&mu);
     parked = true;
     pthread_cond_broadcast(&cv);
-    while (want_pause) pthread_cond_wait(&cv, &mu);
+    while (want_pause && !want_quit) pthread_cond_wait(&cv, &mu);
+    if (want_quit) {
+        /* END THE GAME: leave the lifted program for game_main. Safe here: this is the frame boundary (ss22_host_frame's end, the
+         * frame published), mu is released before the jump, and the frames skipped (rr_tick, the lifted 68K's C calls, ss22_main,
+         * tc_main) hold nothing outside their own stack -- no lock, no autorelease pool, no ObjC object, no open file; all their
+         * state is global and every heap block is noted (tc_reset.h), so tc_core_quit's reset frees and re-initialises it all. */
+        pthread_mutex_unlock(&mu);
+        _longjmp(quit_jb, 1);
+    }
     parked = false;
     pthread_mutex_unlock(&mu);
     fprintf(stderr, "[TC_CORE] resumed\n");
@@ -510,6 +667,7 @@ bool ss22_host_frame(void)
 {
     if (!host_open) return true;
     const uint64_t t0 = mach_absolute_time();
+    hl_this_frame = hl_frame();                               /* TC_CORE_HASHLOG only */
     hg->input_update();                                       /* ss22_run.c's in_update -> ss22_input_update above */
     /* STEREO (tc_core_set_stereo): the same prepared update drawn twice, once per eye into its own glmetal target -- the right eye
      * into target 1, then the left into target 0 (left as the default target). Off: the mono draw, exactly as before. */
@@ -588,6 +746,27 @@ void ss22_host_close(void)
 {
     if (audio_on) { eng_audio_close(); audio_on = false; }
     host_open = false;
+}
+
+/* tc_core_quit, with the game thread gone and glmetal destroyed: this file's per-game state as before the first start */
+static void host_reset(void)
+{
+    atomic_store(&published, 0);                         /* tc_core_latest_frame*: NULL until the next game's first frame */
+    for (int i = 0; i < 3; i++) {
+        outs[i] = nil; outs_r[i] = nil;
+        for (int s = 0; s < 2; s++) for (int e = 0; e < 2; e++) { outs_side[i][s][e] = nil; outs_side_old[i][s][e] = nil; }
+        slot_fov[i] = 0;
+    }
+    side_tw = side_th = 0;
+    atomic_store(&fov_now, 0.785398163f);
+    atomic_store(&fps_now, 0.0);
+    hg = NULL;
+    host_open = headless_open = audio_on = false;
+    period_mt = next_mt = 0;
+    st_t0 = st_work = st_work_max = st_draw = st_draw_max = st_last_end = 0; st_n = st_late = 0;
+    pulled_seen = atomic_load(&audio_pulled);
+    hl_this_frame = false;
+    input_reset();
 }
 
 /* ------------------------------------------------------------------------------------------------ the menu (eng_ui.h): none here */

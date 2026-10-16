@@ -11,6 +11,11 @@
  * <name>_Lside / <name>_Rside (with stereo, _Lside_L ...) from tc_core_latest_frame_side, and the log shows tc_core_view_fov.
  * TC_TEST_EXTAUDIO=1: external audio (tc_core_set_external_audio): no sound card; a thread pulls 10 ms per channel every 10 ms
  * through tc_core_audio_pull_channel, as the app's two emitters do, and the log shows each channel's level and live share.
+ * TC_TEST_QUIT=<cycles>[:<frames>]: the tc_core_quit proof. Boots the game cold, then <cycles> times plays it (coins, start, shots)
+ * and ends it with tc_core_quit and boots it again. Every boot starts from the same EEPROM (<out_dir>/eeprom0.nv if present, else a
+ * blank one) and the same cabinet input, and the core logs the first <frames> (600) frames of each (TC_CORE_HASHLOG: the board's
+ * memory and the picture, frame by frame) to <out_dir>/hash.log; the data folder is <out_dir>/data (TC_CORE_DATA_DIR). Compare the
+ * sessions with tools/tc_hashlog_cmp.py. The memory footprint is printed before the first boot and after every quit.
  */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -22,6 +27,9 @@
 #include <sys/stat.h>
 #include <math.h>
 #include <pthread.h>
+#include <mach/mach.h>
+#include <copyfile.h>
+#include <malloc/malloc.h>
 #include "tc_core.h"
 
 static atomic_int shots;
@@ -113,6 +121,91 @@ static void save_tex(id<MTLDevice> dev, id<MTLCommandQueue> q, const char *dir, 
     fprintf(stderr, "[TEST] saved %s (frame id %llu, %.1f fps, %d shots)\n", p, (unsigned long long)fid, tc_core_fps(), atomic_load(&shots));
 }
 
+static void mem_report(const char *when)
+{
+    task_vm_info_data_t vi; mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) != KERN_SUCCESS) return;
+    fprintf(stderr, "[TEST] memory %s: footprint %.1f MB, resident %.1f MB\n", when, vi.phys_footprint / 1048576.0, vi.resident_size / 1048576.0);
+}
+
+/* TC_TEST_QUIT (see the top): cold boot, then <cycles> x (play, tc_core_quit, boot again) */
+static int quit_test(id<MTLDevice> dev, const char *rom_abs, const char *out_abs, const char *spec)
+{
+    int cycles = 3, frames = 600;
+    sscanf(spec, "%d:%d", &cycles, &frames);
+    char data[1200], log[1200], nv[1300], e0[1200];
+    snprintf(data, sizeof data, "%s/data", out_abs); mkdir(data, 0755);
+    snprintf(log, sizeof log, "%s/hash.log:%d", out_abs, frames);
+    snprintf(nv, sizeof nv, "%s/tc_eeprom.nv", data);
+    snprintf(e0, sizeof e0, "%s/eeprom0.nv", out_abs);
+    setenv("TC_CORE_DATA_DIR", data, 1);
+    setenv("TC_CORE_HASHLOG", log, 1);
+    const bool have_e0 = access(e0, R_OK) == 0;
+    fprintf(stderr, "[TEST] quit test: %d cycles, %d frames hashed a boot, EEPROM %s\n", cycles, frames, have_e0 ? e0 : "blank");
+    sleep_s(1); malloc_zone_pressure_relief(NULL, 0);
+    mem_report("before the first boot");
+    uint64_t fid_base = 0;                                       /* the newest frame id of the games before */
+    for (int c = 0; c <= cycles; c++) {
+        { uint64_t id = 0; if (tc_core_latest_frame(&id) && id > fid_base) fid_base = id; }
+        unlink(nv);
+        if (have_e0 && copyfile(e0, nv, NULL, COPYFILE_DATA) != 0) { perror(e0); return 1; }
+        tc_core_set_gun(0.5f, 0.5f, true);                       /* the same cabinet at every boot */
+        tc_core_set_pedal(false);
+        tc_core_set_trigger(false);
+        const double s0 = CFAbsoluteTimeGetCurrent();
+        const int rc = tc_core_start(rom_abs, (__bridge void *)dev, 640, 480);
+        fprintf(stderr, "[TEST] boot %d: tc_core_start -> %d in %.0f ms\n", c, rc, (CFAbsoluteTimeGetCurrent() - s0) * 1e3);
+        if (rc) return 1;
+        /* the hashed frames: wait for them by frame id (ids keep counting across games), not by the clock -- a slow machine
+         * must not get the coins below inside them */
+        for (int w = 0; w < 6000; w++) {
+            uint64_t id = 0;
+            if (tc_core_latest_frame(&id) && id >= fid_base + (uint64_t)frames + 2) break;
+            sleep_s(0.01);
+        }
+        sleep_s(0.2);
+        if (c == cycles) break;
+        uint64_t last = 0;
+        for (int i = 0; i < 3; i++) tc_core_insert_coin();      /* play: coins, start, shots in and out of cover */
+        sleep_s(2);
+        tc_core_press_start(); sleep_s(3);
+        tc_core_press_start();
+        for (int k = 0; k < 16; k++) {
+            tc_core_set_gun(0.3f + 0.4f * (float)((k * 37) % 100) / 100.0f, 0.3f + 0.4f * (float)((k * 61) % 100) / 100.0f, true);
+            tc_core_set_pedal(k % 4 != 3);
+            tc_core_set_trigger(true); sleep_s(0.1); tc_core_set_trigger(false); sleep_s(0.4);
+        }
+        if (c == 1) {                                            /* a pause in the middle of one game: quit from the paused state */
+            tc_core_stop();
+            fprintf(stderr, "[TEST] boot %d: paused before the quit\n", c);
+        }
+#ifndef TC_TEST_NO_QUIT
+        if (tc_core_latest_frame(&last) && last > fid_base) fid_base = last;
+        char w[64]; snprintf(w, sizeof w, "in game %d, before its quit", c); mem_report(w);
+        const double q0 = CFAbsoluteTimeGetCurrent();
+        @autoreleasepool { tc_core_quit(); }
+        const double q1 = CFAbsoluteTimeGetCurrent();
+        uint64_t fid = 1; void *f = tc_core_latest_frame(&fid);
+        fprintf(stderr, "[TEST] boot %d: quit in %.0f ms; latest frame %p (should be NULL)\n", c, (q1 - q0) * 1e3, f);
+        sleep_s(1); malloc_zone_pressure_relief(NULL, 0);        /* what the allocators still cache is not the core's */
+        snprintf(w, sizeof w, "after quit %d", c + 1); mem_report(w);
+#else
+        fprintf(stderr, "[TEST] built without tc_core_quit: cold boot only\n");
+        break;
+#endif
+    }
+#ifndef TC_TEST_NO_QUIT
+    @autoreleasepool { tc_core_quit(); }
+    sleep_s(1); malloc_zone_pressure_relief(NULL, 0);
+    mem_report("after the last quit");
+#else
+    tc_core_stop();
+#endif
+    fprintf(stderr, "[TEST] quit test done; shots %d\n", atomic_load(&shots));
+    { const char *h = getenv("TC_TEST_HOLD"); if (h && atof(h) > 0) { fprintf(stderr, "[TEST] holding %s s (pid %d)\n", h, getpid()); sleep_s(atof(h)); } }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     @autoreleasepool {
@@ -132,6 +225,7 @@ int main(int argc, char **argv)
         const char *ea = getenv("TC_TEST_EXTAUDIO");
         const bool ext = ea && *ea && *ea != '0';
         if (ext) { tc_core_set_external_audio(true); pthread_t th; pthread_create(&th, NULL, ext_puller, NULL); }
+        { const char *e = getenv("TC_TEST_QUIT"); if (e && *e) { const int r = quit_test(dev, rom_abs, out_abs, e); ext_report("quit test"); return r; } }
         const int rc = tc_core_start(rom_abs, (__bridge void *)dev, 640, 480);
         fprintf(stderr, "[TEST] tc_core_start -> %d\n", rc);
         if (rc) return 1;

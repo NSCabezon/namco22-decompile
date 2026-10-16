@@ -14,6 +14,7 @@ your ROMs.
 | `tc_game_core.c` | `src/tc_game.c` with `main` renamed `tc_main`. |
 | `nosdl/SDL2/SDL.h` | Not SDL. It supplies only the SDL types and constants that the engine headers' tables name. It declares no SDL functions. |
 | `tc_core_test.m` | A macOS harness for the same API. |
+| `tc_reset.h`, `tc_reset.c`, `tc_reset_core.h` | `tc_core_quit`'s reset: the game's variables in two sections of their own, its heap blocks noted. |
 
 ## How it runs
 
@@ -44,7 +45,9 @@ your ROMs.
 - **Files.** The working directory is set to `Application Support/TimeCrisis`, so `tc_eeprom.nv` is saved there.
   The MAME output socket is off (`SS22_OUT_PORT=0`), and there is no `tc_last.rec`.
 - **Stop and resume.** `tc_core_stop` parks the game thread: audio is closed and the EEPROM saved. A later
-  `tc_core_start` resumes the same game.
+  `tc_core_start` resumes the same game (the app's Home).
+- **Quit.** `tc_core_quit` ends the game (the app's Exit); the next `tc_core_start` boots a new one from power-on, exactly as
+  a new process would. See "Quit" below.
 - **A fatal trap** in the lifted program ends the game thread, not the app.
 - **Not compiled in:** `ss22_host.c`, `ss22_input.c`, `eng_ui.c` (the Nuklear menu), `eng_display.c`, `eng_ffb.c`,
   `render_target.c`, `win_startup.c`.
@@ -96,6 +99,71 @@ cmake --build build-coremac --target tc_core_test
 
 The harness runs attract mode, then stop and resume, then three coins and start, then play with a trigger every 0.5 s.
 It saves frames as PPM files and counts `TC_EVENT_SHOT`.
+
+## Quit (`tc_core_quit`)
+
+`tc_core_stop` + `tc_core_start` pause and resume one game. `tc_core_quit` ends it, and the next `tc_core_start` (with its
+arguments read again) boots the cabinet from power-on.
+
+- **How the game thread leaves.** The decompiled program never returns (`entry_reset` runs the game's own loop). The only place
+  the game thread waits is `park_if_asked`, at the end of `ss22_host_frame`, the frame boundary. `tc_core_quit` sets `want_quit`
+  and `want_pause`. The thread parks there exactly as for `tc_core_stop` (sound closed, EEPROM saved), then `_longjmp`s back to
+  `game_main`. `game_main` runs the engine's own close sequence for a closed window (`ss22_eeprom_save`, `ss22_snd_close`,
+  `ss22_out_close`, `ss22_input_close`, `ss22_host_close`) and returns; `tc_core_quit` joins it. The jump skips `rr_tick`, the
+  lifted 68K's C frames, `ss22_main` and `tc_main`. These hold no lock (`mu` is released first), no autorelease pool, no ObjC
+  object and no open file. All their state is global and every heap block is noted, so the reset below covers it. A game thread
+  that already ended (a fatal trap, or a game that could not start) is simply joined.
+- **What is freed.** glmetal (`glmetal_destroy`: waits for the GPU, then releases the textures, buffers, pipelines, targets,
+  queue and device), the frame and side-view textures of `tc_core.m`, and every heap block the engine's C code still holds.
+- **How the globals are reset.** `tc_reset.h` is force-included (`-include`) into every C source of `tc_core` and into
+  `glmetal.m`. It puts each global and `static` variable of those files, `static` locals included, into `__DATA,__tcg_data`
+  (initialised) or `__DATA,__tcg_bss` (zero-fill) with `#pragma clang section`. That covers the 68K RAM images and register file,
+  the DSP, the sound MCU, the scheduler, the renderer's caches, glmetal's state and the `getenv` caches. In the C sources
+  `malloc`, `calloc`, `realloc`, `free` and `strdup` become `tcg_*`. These are the same allocations, and each live block is
+  noted; blocks of 1 MB or more are their own mapped pages, so a quit gives them straight back to the system. `tc_reset.c`
+  copies `__tcg_data` in a constructor, at image load and before any game code runs. `tcg_reset` frees the noted blocks, copies
+  `__tcg_data` back and zero-fills `__tcg_bss` (whole pages are mapped anew). After `tcg_reset`, every variable of the game's
+  code holds its load-time value. Only `tc_core.m` (the API's locks, the app's settings, the frame-id counter) and `tc_reset.c`
+  sit outside the sections. `tc_core.m` resets its per-game part itself (`host_reset`, `input_reset`), and re-applies
+  `tc_core_set_external_audio`.
+  `size -m` on the objects shows nothing else in `__DATA,__data` or `__bss`. The sections hold 528 + 20,359,024 bytes. The
+  pragma only moves the variables; the code is the same, and the default runs hash identically (below).
+- **Threads.** The app's audio thread can keep calling `tc_core_audio_pull*` through a quit. A gate (`pull_gate` and `pulls_in`)
+  keeps those calls out of `audio_out.c` while it is reset; they write silence. The frame getters must be called from the same
+  thread as `tc_core_quit` (the app's main thread). Frames returned before the quit must not be used after it. The getters
+  return NULL until the next game's first frame. The frame ids keep increasing across games.
+- **Kept across a quit:** the event callback, the stereo, panorama and external-audio settings, and the gun, pedal and trigger
+  state. Presses, starts and coins made before the quit are dropped.
+
+### The proof (macOS, M1 Max)
+
+`TC_TEST_QUIT=<cycles>[:<frames>] tc_core_test <roms> <out>`:
+- It boots cold and hashes the first frames.
+- Then, `<cycles>` times, it plays (3 coins, start, 16 shots in and out of cover; in the second cycle it also pauses), calls
+  `tc_core_quit`, boots again and hashes again. The quit runs once from the paused state.
+- Every boot starts from the same EEPROM (`<out>/eeprom0.nv`) and the same cabinet input.
+- `TC_CORE_HASHLOG` makes the core log, for each frame, the board memory (`g_ss22` from work RAM on, `g_hw`, the 68K register
+  file `R`) at the frame boundary and a hash of the published picture. `TC_CORE_DATA_DIR` keeps the test out of the user's data
+  folder. Compare the sessions with `tools/tc_hashlog_cmp.py`.
+
+```sh
+mkdir -p /tmp/q && cp <a formatted tc_eeprom.nv> /tmp/q/eeprom0.nv
+ENG_TEX_BUDGET=0 TC_TEST_QUIT=3:600 ./build-coremac/tc_core_test extracted /tmp/q
+python3 tools/tc_hashlog_cmp.py <cold.log from a separate process> /tmp/q/hash.log
+```
+
+- **Hashes.** With `ENG_TEX_BUDGET=0`, all four boots are identical, frame by frame, over 600 frames: memory and pixels. They also
+  match a cold boot by a separate process running the core from before this change. The same holds with external audio
+  (`TC_TEST_EXTAUDIO=1`), and with stereo and panorama on (`TC_TEST_STEREO=1 TC_TEST_PANORAMA=1`).
+- **The bake budget.** With the default budget (the window's, as in the app), the memory hashes are still identical in every
+  boot. The pixels are not: the budget adapts to the measured bake speed. That is timing, not state. Two cold processes of the
+  old core differ the same way from frame ~300.
+- **Memory** (`phys_footprint`, test with hashing on): 4 MB before the first boot, about 500 MB in a game, and 33 to 51 MB
+  after each of three quits. It does not grow from one quit to the next. The rest is Metal's and the frameworks' own state.
+  A quit takes 8 to 31 ms. A later start takes about 150 ms (the first: 240 to 420 ms).
+- **The default paths are unchanged.** The new core's cold boot hashes the same as the old core's. `tc_metal` (with
+  `glmetal_destroy` added, never called) replays `tc_last.rec` (`--replay ... --shots DIR 30 --frames 2400`, 80 PPMs) to
+  byte-identical shots. The default `tc_core_test` run (attract mode, stop and resume, play) still passes.
 
 ## Stereo 3D (tc-visionos PLAN.md level 2a)
 

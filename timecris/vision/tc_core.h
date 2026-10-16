@@ -30,10 +30,20 @@ typedef void (*tc_core_event_fn)(void *user, tc_core_event event, int32_t value)
 /// Application Support/TimeCrisis in the app's container (the process's working directory is set there).
 /// Returns 0 once the game is running, nonzero if it could not start (missing ROMs, no Metal).
 /// After tc_core_stop, tc_core_start RESUMES the same game (a powered cabinet that was paused); the arguments are
-/// then ignored. One game per process.
+/// then ignored. After tc_core_quit it boots a new game, as at the first call. One game at a time.
 int  tc_core_start(const char *rom_dir, void *mtl_device, int width, int height);
 /// Pauses the game thread (emulation, audio output and frames stop; the EEPROM is saved). Returns once parked.
 void tc_core_stop(void);
+/// ENDS the game (the app's Exit; tc_core_stop is its Home): parks the game thread as tc_core_stop does (audio stopped, the EEPROM
+/// saved), makes it leave the game and joins it, releases everything the core made (the frame textures, glmetal's device objects,
+/// the engine's heap) and puts every variable of the game's code back to its value at load. The next tc_core_start then boots the
+/// cabinet from power-on, frame for frame what a new process boots (its arguments are used again: ROM folder, device, size). Blocks
+/// until done (tens of ms). Frames returned before it must not be used after it; tc_core_latest_frame* return NULL until the next
+/// game's first frame. Kept across it: the event callback, stereo, panorama and external-audio settings, the gun/pedal/trigger
+/// state (presses, starts and coins made before it are dropped). Also ends a game thread that stopped on a fatal trap. Call it
+/// from the thread that calls the other functions (the frame getters included), not concurrently with tc_core_start /
+/// tc_core_stop; the audio pulls may go on meanwhile on their own thread (silence). No-op if no game was started.
+void tc_core_quit(void);
 
 /// The newest *completed* frame as an `id<MTLTexture>` (bridged, unretained). Triple buffered: it stays untouched for
 /// at least two more frames. `frame_id` increments per finished frame; returns NULL before the first frame.

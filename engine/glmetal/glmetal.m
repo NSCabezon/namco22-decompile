@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
 #include "gl.h"
 
 /* ------------------------------------------------------------------------------------------------ shaders */
@@ -1620,4 +1621,33 @@ void *glmetal_GetProcAddress(const char *name)
     for (size_t i = 0; i < sizeof procs / sizeof procs[0]; i++)
         if (!strcmp(procs[i].name, name)) return procs[i].fn;
     return NULL;                       /* shaders, programs, framebuffer objects: not provided */
+}
+
+/* Everything glmetal made, released: the GPU's work waited for, every texture, buffer, pipeline and target, the device and queue.
+ * The C state is NOT reset here: the visionOS core gathers it (with the engine's) in tc_reset.h's sections and puts it back after
+ * this (tc_core_quit), so the next glmetal_create starts as the first one did. Without that, call nothing but glmetal_set_device and
+ * glmetal_create after it. */
+void glmetal_destroy(void)
+{
+    if (dev) {
+        commit(true);
+        for (int i = 0; i < 2; i++) if (inflight[i]) [inflight[i] waitUntilCompleted];
+        for (int spin = 0; spin < 20000 && atomic_load(&done_serial) + 1 < next_serial; spin++) usleep(100);   /* the completion handlers */
+    }
+    for (int i = 0; i < ntexs; i++) if (texs[i].mtl) { CFRelease(texs[i].mtl); texs[i].mtl = NULL; }
+    for (int i = 0; i < nchunks; i++) if (chunks[i].buf) { CFRelease(chunks[i].buf); chunks[i].buf = NULL; }
+    free(texs); texs = NULL; ntexs = 0;
+    free(chunks); chunks = NULL; nchunks = 0; cur_chunk = -1;
+    free(freenames); freenames = NULL; nfree = capfree = 0;
+    free(imm); imm = NULL; imm_cap = 0;
+    free(tmpv); tmpv = NULL; tmpv_cap = 0;
+    free(gat); gat = NULL; gat_cap = 0;
+    pend_buf = enc_vbuf = NULL;
+    for (int i = 0; i < GLMETAL_MAX_TARGETS; i++) { slot[i].t[0] = slot[i].t[1] = slot[i].depth = nil; }
+    tgt[0] = tgt[1] = depth_tex = dummy_tex = nil;
+    enc = nil; blit = nil; cb = nil; inflight[0] = inflight[1] = nil; readbuf = nil;
+    pipes = nil; dstates = nil; samplers = nil;
+    fn_vs = fn_fs = fn_post_read = fn_post_fetch = nil;
+    lib = lib_fetch = nil;
+    queue = nil; dev = nil; preset_dev = nil;
 }

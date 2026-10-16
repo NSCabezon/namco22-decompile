@@ -172,15 +172,22 @@ endif()
 option(TC_CORE_MAC "macOS: also build the visionOS core library (tc_core) and its harness (tc_core_test)" OFF)
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen/snd.cov AND (TC_VISION OR (APPLE AND NOT IOS AND TC_CORE_MAC)))
   enable_language(OBJC)
-  set(TC_CORE_LIB_SRC ${TC_CORE_SRC} gen/tc_snd_driver.c ${NAMCO22_ENGINE_DIR}/glmetal/glmetal.m vision/tc_core.m vision/tc_game_core.c)
+  set(TC_CORE_LIB_SRC ${TC_CORE_SRC} gen/tc_snd_driver.c ${NAMCO22_ENGINE_DIR}/glmetal/glmetal.m vision/tc_core.m vision/tc_game_core.c
+      vision/tc_reset.c)
   list(REMOVE_ITEM TC_CORE_LIB_SRC src/tc_game.c       # vision/tc_game_core.c: the same file with main() named tc_main
        ${NAMCO22_ENGINE_DIR}/ss22_host.c ${NAMCO22_ENGINE_DIR}/ss22_input.c ${NAMCO22_ENGINE_DIR}/eng_ffb.c ${NAMCO22_ENGINE_DIR}/render_target.c
        ${NAMCO22_ENGINE_DIR}/eng_display.c ${NAMCO22_ENGINE_DIR}/eng_ui.c ${NAMCO22_ENGINE_DIR}/win_startup.c)
-  set_source_files_properties(${NAMCO22_ENGINE_DIR}/glmetal/glmetal.m vision/tc_core.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-Wall")
+  # tc_core_quit (vision/tc_reset.h): every C source of the game, and glmetal.m, get tc_reset.h first -- their variables in sections
+  # of their own, their heap blocks noted -- so a quit can put the game back to how a new process finds it. Not tc_core.m (its state
+  # outlives a game) nor tc_reset.c itself (TC_RESET_IMPL).
+  set_source_files_properties(vision/tc_core.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-Wall")
+  set_source_files_properties(${NAMCO22_ENGINE_DIR}/glmetal/glmetal.m PROPERTIES COMPILE_OPTIONS
+      "-fobjc-arc;-Wall;-include;${CMAKE_CURRENT_SOURCE_DIR}/vision/tc_reset.h")
+  set_source_files_properties(vision/tc_reset.c PROPERTIES COMPILE_DEFINITIONS TC_RESET_IMPL)
   add_library(tc_core STATIC ${TC_CORE_LIB_SRC})
   target_include_directories(tc_core BEFORE PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vision/nosdl ${CMAKE_CURRENT_SOURCE_DIR}/vision)
   target_compile_definitions(tc_core PRIVATE ENG_GL_METAL ENG_EXTERNAL_HOST ENG_AUDIO_COREAUDIO)
-  target_compile_options(tc_core PRIVATE $<$<COMPILE_LANGUAGE:C>:-Wall>)
+  target_compile_options(tc_core PRIVATE $<$<COMPILE_LANGUAGE:C>:-Wall> "$<$<COMPILE_LANGUAGE:C>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/vision/tc_reset.h>")
   if(NOT TC_VISION)
     add_executable(tc_core_test vision/tc_core_test.m)
     set_source_files_properties(vision/tc_core_test.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-Wall")

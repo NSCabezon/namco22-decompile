@@ -342,6 +342,9 @@ bool glmetal_create(int w, int h);
 /* Use this id<MTLDevice> (bridged; retained by glmetal) instead of the system default. Before the first glmetal_create:
  * an embedding app (the visionOS shell) passes its own device so the frames are textures it can sample. */
 void glmetal_set_device(void *mtl_device);
+/* Release everything glmetal made (waits for the GPU first): the device, queue, targets, textures and buffers. The embedding core's
+ * quit (timecris/vision tc_core_quit), which also puts glmetal's variables back to their initial values. */
+void glmetal_destroy(void);
 int  glmetal_width(void);
 int  glmetal_height(void);
 /* The target as an id<MTLTexture> (bridged, not retained) -- changes when glmetal_create resizes it, and may alternate
