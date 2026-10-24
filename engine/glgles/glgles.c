@@ -203,6 +203,7 @@ typedef struct {
 typedef struct {
     GLuint fbo, color[2], depth;     /* color[1] only for the no-fetch gamma ping-pong */
     int cur, w, h, req_w, req_h;
+    int fb_attached;                 /* which color[] is attached to fbo now (-1 = none): skip the per-flush re-attach */
     bool made;
 } target;
 
@@ -228,8 +229,10 @@ static struct { GLint lut; } UP;
 static struct { GLint lut, src; } UPC;
 static bool fetch_ok;
 static GLuint vao;
-#define VBO_RING 4
-static GLuint vbo[VBO_RING]; static size_t vbo_cap[VBO_RING]; static int vbo_i;
+/* ONE streaming vertex buffer. The attrib layout is bound to it ONCE at create (it is the only GL_ARRAY_BUFFER glgles ever
+ * binds), so flush_pending no longer re-issues the 4 VertexAttribPointer calls every flush -- it only orphans + uploads + draws.
+ * Orphaning (BufferData NULL) per flush keeps the no-stall streaming of the old 4-deep ring while dropping the per-flush setup. */
+static GLuint vbo; static size_t vbo_cap;
 static GLuint lut_tex, scratch_tex; static int scratch_w, scratch_h;
 
 static srvstate S;
@@ -566,14 +569,17 @@ static bool make_target(target *t, int w, int h)
     R_FramebufferRenderbuffer(RGL_FRAMEBUFFER, RGL_DEPTH_ATTACHMENT, RGL_RENDERBUFFER, t->depth);
     const GLenum st = R_CheckFramebufferStatus(RGL_FRAMEBUFFER);
     if (st != RGL_FRAMEBUFFER_COMPLETE) { fprintf(stderr, "[GLGLES] target %dx%d incomplete (0x%x)\n", w, h, st); return false; }
-    t->cur = 0; t->w = w; t->h = h; t->made = true;
+    t->cur = 0; t->fb_attached = 0; t->w = w; t->h = h; t->made = true;   /* color[0] attached just above */
     return true;
 }
 static void bind_target_idx(int i)
 {
     target *t = &tgt[i];
     R_BindFramebuffer(RGL_FRAMEBUFFER, t->fbo);
-    R_FramebufferTexture2D(RGL_FRAMEBUFFER, RGL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t->color[t->cur], 0);
+    if (t->fb_attached != t->cur) {    /* the attachment is per-FBO and only changes on the gamma ping-pong: skip the re-attach otherwise (a per-flush call, 2x in stereo) */
+        R_FramebufferTexture2D(RGL_FRAMEBUFFER, RGL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t->color[t->cur], 0);
+        t->fb_attached = t->cur;
+    }
 }
 static void bind_target(void) { bind_target_idx(cur_set); }
 
@@ -656,15 +662,9 @@ static void flush_pending(void)
      * the vertices once. In stereo only the target FBO and u_eye repeat -- the parallax lives in each vertex's bias. */
     apply_gl_state(&pend);
     const size_t bytes = (size_t)pend_n * sizeof(Vtx);
-    vbo_i = (vbo_i + 1) % VBO_RING;
-    R_BindBuffer(RGL_ARRAY_BUFFER, vbo[vbo_i]);
-    if (bytes > vbo_cap[vbo_i]) { size_t n = 1u << 16; while (n < bytes) n *= 2; R_BufferData(RGL_ARRAY_BUFFER, (GLsizeiptr)n, NULL, RGL_STREAM_DRAW); vbo_cap[vbo_i] = n; }
-    else R_BufferData(RGL_ARRAY_BUFFER, (GLsizeiptr)vbo_cap[vbo_i], NULL, RGL_STREAM_DRAW);  /* orphan */
+    if (bytes > vbo_cap) { while (vbo_cap < bytes) vbo_cap *= 2; R_BufferData(RGL_ARRAY_BUFFER, (GLsizeiptr)vbo_cap, NULL, RGL_STREAM_DRAW); }
+    else R_BufferData(RGL_ARRAY_BUFFER, (GLsizeiptr)vbo_cap, NULL, RGL_STREAM_DRAW);  /* orphan: fresh storage, no stall; the attrib layout stays bound to the buffer object */
     R_BufferSubData(RGL_ARRAY_BUFFER, 0, (GLsizeiptr)bytes, pend_v);
-    R_VertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, sizeof(Vtx), (const void *)0);
-    R_VertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(Vtx), (const void *)16);
-    R_VertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(Vtx), (const void *)32);
-    R_VertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Vtx), (const void *)48);
     if (st_mode) {
         R_Uniform1f(U.eye, -1.0f); bind_target_idx(st_L); R_DrawArrays(prim_gl[pend.prim], 0, pend_n);
         R_Uniform1f(U.eye,  1.0f); bind_target_idx(st_R); R_DrawArrays(prim_gl[pend.prim], 0, pend_n);
@@ -1187,7 +1187,14 @@ int glgles_create(int w, int h)
 
     R_GenVertexArrays(1, &vao); R_BindVertexArray(vao);
     R_EnableVertexAttribArray(0); R_EnableVertexAttribArray(1); R_EnableVertexAttribArray(2); R_EnableVertexAttribArray(3);
-    R_GenBuffers(VBO_RING, vbo);
+    R_GenBuffers(1, &vbo);
+    R_BindBuffer(RGL_ARRAY_BUFFER, vbo);
+    vbo_cap = 1u << 16;
+    R_BufferData(RGL_ARRAY_BUFFER, (GLsizeiptr)vbo_cap, NULL, RGL_STREAM_DRAW);
+    R_VertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, sizeof(Vtx), (const void *)0);   /* bound once: flush_pending never re-issues these */
+    R_VertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(Vtx), (const void *)16);
+    R_VertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(Vtx), (const void *)32);
+    R_VertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Vtx), (const void *)48);
 
     R_GenTextures(1, &lut_tex);
     R_BindTexture(GL_TEXTURE_2D, lut_tex);
@@ -1340,7 +1347,7 @@ void glgles_destroy(void)
             if (tgt[i].color[1]) R_DeleteTextures(1, &tgt[i].color[1]); R_DeleteRenderbuffers(1, &tgt[i].depth);
         }
         for (int i = 0; i < ntexs; i++) if (texs[i].used && texs[i].tex) R_DeleteTextures(1, &texs[i].tex);
-        if (vbo[0]) R_DeleteBuffers(VBO_RING, vbo);
+        if (vbo) R_DeleteBuffers(1, &vbo);
         if (vao) R_DeleteVertexArrays(1, &vao);
         if (lut_tex) R_DeleteTextures(1, &lut_tex);
         if (scratch_tex) R_DeleteTextures(1, &scratch_tex);
@@ -1354,7 +1361,7 @@ void glgles_destroy(void)
     free(gat); gat = NULL; gat_cap = 0;
     free(pend_v); pend_v = NULL; pend_cap = pend_n = 0; pend_on = false;
     memset(tgt, 0, sizeof tgt);
-    for (int i = 0; i < VBO_RING; i++) { vbo[i] = 0; vbo_cap[i] = 0; } vbo_i = 0;
+    vbo = 0; vbo_cap = 0;
     vao = lut_tex = scratch_tex = 0; scratch_w = scratch_h = 0;
     prog = prog_post = prog_post_copy = 0; applied_prog = 0; have_applied = false;
     st_mode = 0; st_L = st_R = 0; bias_arr = NULL;

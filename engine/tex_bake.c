@@ -1117,6 +1117,15 @@ static int      budget_env_done;
 static double   frame_spent;
 static unsigned budget_frame = ~0u;
 static int      in_pump;
+/* ENG_TEX_BUDGET_MS: a hard per-frame bake TIME cap in ms (0 = off, the desktop/Apple default). The texel budgets above bound
+ * only FULL-quality bakes, and over budget every cold quad still bakes a ~1k-texel COARSE placeholder with no cap on the count --
+ * a scene change with hundreds of cold quads then freezes a frame on a slow mobile GPU even though each placeholder is cheap
+ * (the Quest: ~800k placeholder texels, ~160 ms). This cap bounds TOTAL bake work a frame -- full bakes, coarse placeholders and
+ * the pump together. Over it, a cold quad draws FLAT-SHADED (no texture) for the frame and is queued; the next frames' pump
+ * sharpens it in. Off unless set, so headless gates and the other hosts are byte-for-byte unchanged. */
+static double   g_budget_ms;
+static double   frame_bake_t0;                   /* now_ns() at this frame's bake start (set before the pump) */
+static int budget_time_left(void) { return g_budget_ms <= 0.0 || (now_ns() - frame_bake_t0) < g_budget_ms * 1e6; }
 int tex_tier_fallbacks;                          /* over budget, a cached OTHER size tier of the same texture was drawn instead (cumulative) */
 int tex_placeholders, tex_refined;              /* placeholders served / refined to full quality (cumulative, for the perf logs) */
 typedef struct { uint16_t min_u, min_v, range_u, range_v; uint8_t texbank, pal_group, cmode; int cap_req, opaque; } PendingBake;
@@ -1131,6 +1140,7 @@ void tex_bake_window_defaults(void)                          /* an interactive h
 static void budget_env(void)
 {
     budget_env_done = 1;
+    { const char *m = getenv("ENG_TEX_BUDGET_MS"); if (m) { double v = atof(m); g_budget_ms = v > 0.0 ? v : 0.0; } }
     const char *e = getenv("ENG_TEX_BUDGET");
     if (!e) return;
     long d = 0, pu = 0;
@@ -1143,7 +1153,7 @@ static void budget_pump(void)                               /* the previous fram
     in_pump = 1;
     const int req = g_tex_bake_cap_req, op = g_tex_opaque;
     const double limit = (double)g_budget_pump * budget_scale();
-    while (pend_n > 0 && spent < limit) {
+    while (pend_n > 0 && spent < limit && budget_time_left()) {
         const PendingBake pb = pend[--pend_n];
         g_tex_bake_cap_req = pb.cap_req; g_tex_opaque = pb.opaque;
         float su, sv; const double t0 = g_bake_texels, c0 = now_ns();
@@ -1182,11 +1192,13 @@ GLuint bake_quad_texture(int min_u, int min_v, int range_u, int range_v,
     if (g_budget_draw <= 0 || in_pump) return bake_impl(min_u, min_v, range_u, range_v, texbank, pal_group, cmode, out_su, out_sv, out_ou, out_ov, 0, 0);
     if (budget_frame != g_eng_frame) {                      /* a new shown frame: a fresh budget, and the refinement of what earlier frames coarsened */
         budget_frame = g_eng_frame; frame_spent = 0;
+        frame_bake_t0 = now_ns();                           /* the per-frame bake TIME cap (ENG_TEX_BUDGET_MS) covers the pump + this frame's bakes */
         if (g_budget_pump > 0) budget_pump(); else pend_n = 0;
     }
     GLuint t = bake_impl(min_u, min_v, range_u, range_v, texbank, pal_group, cmode, out_su, out_sv, out_ou, out_ov, 0, 1);       /* cached at full quality? */
     if (t) return t;
-    if (frame_spent < (double)g_budget_draw * budget_scale() || (range_u <= COARSE_CAP && range_v <= COARSE_CAP)) {
+    if (budget_time_left() &&
+        (frame_spent < (double)g_budget_draw * budget_scale() || (range_u <= COARSE_CAP && range_v <= COARSE_CAP))) {
         const double t0 = g_bake_texels, c0 = now_ns();
         t = bake_impl(min_u, min_v, range_u, range_v, texbank, pal_group, cmode, out_su, out_sv, out_ou, out_ov, 0, 0);
         const double tx = g_bake_texels - t0;
@@ -1223,6 +1235,18 @@ GLuint bake_quad_texture(int min_u, int min_v, int range_u, int range_v,
       } }
     t = bake_impl(min_u, min_v, range_u, range_v, texbank, pal_group, cmode, out_su, out_sv, out_ou, out_ov, COARSE_CAP, 1);       /* a placeholder already there? */
     if (t) return t;
+    if (!budget_time_left()) {                              /* the frame's bake-time cap also bounds the COARSE placeholders (hundreds of ~1k-texel bakes freeze a mobile frame):
+                                                             * out of time -- draw this quad FLAT-SHADED (no texture) this frame and queue the real bake for the next pump */
+        if (pend_n < PEND_MAX) {
+            const PendingBake pb = { (uint16_t)min_u, (uint16_t)min_v, (uint16_t)range_u, (uint16_t)range_v, (uint8_t)texbank, (uint8_t)pal_group,
+                                     (uint8_t)cmode, g_tex_bake_cap_req, g_tex_opaque };
+            pend[pend_n++] = pb;
+        }
+        tex_placeholders++;
+        if (out_su) *out_su = 1.0f; if (out_sv) *out_sv = 1.0f;
+        if (out_ou) *out_ou = 0.0f; if (out_ov) *out_ov = 0.0f;
+        return 0;                                           /* 0 = no texture: quad_gl's unit is disabled, the quad draws flat (vertex shade) */
+    }
     { const double t0 = g_bake_texels;
       t = bake_impl(min_u, min_v, range_u, range_v, texbank, pal_group, cmode, out_su, out_sv, out_ou, out_ov, COARSE_CAP, 0);
       frame_spent += g_bake_texels - t0; }
