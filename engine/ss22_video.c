@@ -18,6 +18,11 @@ void ss22_video_render_refresh(void) { eng_render_refresh(); }
 
 static uint32_t poly_word(int i) { return g_ss22.poly[i & 0x7FFF]; }
 
+/* RENDER-THREAD DECOUPLING: when set, ss22_video_prepare hands off to the host (snapshot on the emulation thread; the render
+ * thread prepares + draws) instead of running ss22_prepare inline. NULL on Apple/desktop -> unchanged behaviour. */
+static void (*g_prepare_hook)(void);
+void ss22_video_set_prepare_hook(void (*hook)(void)) { g_prepare_hook = hook; }
+
 bool ss22_video_init(const char *dir)
 {
     const ss22_video_cfg *c = &g_ss22_game->video;
@@ -49,6 +54,7 @@ bool ss22_video_init(const char *dir)
 
 void ss22_video_prepare(void)
 {
+    if (g_prepare_hook) { g_prepare_hook(); return; }   /* decoupled: the host snapshots now and prepares+draws on another thread */
     ss22_regs r;
     memset(&r, 0, sizeof r);
     r.walk = eng_frame_walks(from_capture || ss22_dsp_slave_active());
@@ -63,6 +69,50 @@ void ss22_video_prepare(void)
     r.spriteram = g_ss22.sprite; r.spriteram_size = sizeof g_ss22.sprite;
     r.vics = g_ss22.vics;        r.vics_size = sizeof g_ss22.vics;
     for (int i = 0; i < 0x20; i++) r.vics_ctl[i] = g_ss22.vics_ctl[i];
+    ss22_prepare(&r);
+}
+
+/* emulation thread: deep-copy every region ss22_prepare reads from g_ss22, plus the walk flag computed as above. */
+void ss22_video_snapshot(ss22_vsnap *d)
+{
+    d->walk = eng_frame_walks(from_capture || ss22_dsp_slave_active());
+    memcpy(d->poly,        g_ss22.poly,        sizeof g_ss22.poly);
+    memcpy(d->pal,         g_ss22.pal,         sizeof g_ss22.pal);
+    memcpy(d->mixer,       g_ss22.mixer,       sizeof g_ss22.mixer);
+    memcpy(d->cgram,       g_ss22.cgram,       sizeof g_ss22.cgram);
+    memcpy(d->text,        g_ss22.text,        sizeof g_ss22.text);
+    memcpy(d->sprite,      g_ss22.sprite,      sizeof g_ss22.sprite);
+    memcpy(d->vics,        g_ss22.vics,        sizeof g_ss22.vics);
+    memcpy(d->czattr,      g_ss22.czattr,      sizeof g_ss22.czattr);
+    memcpy(d->tilemapattr, g_ss22.tilemapattr, sizeof g_ss22.tilemapattr);
+    memcpy(d->czram,       g_ss22.czram,       sizeof g_ss22.czram);
+    memcpy(d->spotram,     g_ss22.spotram,     sizeof g_ss22.spotram);
+    memcpy(d->vics_ctl,    g_ss22.vics_ctl,    sizeof g_ss22.vics_ctl);
+    d->spot_enable = g_ss22.spot_enable;
+    d->chipselect  = g_ss22.chipselect;
+}
+
+/* render thread: ss22_prepare over the snapshot. poly is read through a render-thread-only pointer (ss22_regs wants a
+ * function). Builds the exact ss22_regs ss22_video_prepare would, but over `s` -- never live g_ss22. */
+static const uint32_t *snap_poly;
+static uint32_t snap_poly_word(int i) { return snap_poly[i & 0x7FFF]; }
+void ss22_prepare_snapshot(const ss22_vsnap *s)
+{
+    ss22_regs r;
+    memset(&r, 0, sizeof r);
+    snap_poly = s->poly;
+    r.walk = s->walk;
+    r.poly_word = snap_poly_word;
+    r.pal = s->pal;
+    r.mixer = s->mixer;
+    for (int i = 0; i < 8; i++) { r.czattr[i] = s->czattr[i]; r.tilemapattr[i] = s->tilemapattr[i]; }
+    for (int b = 0; b < 4; b++) r.czram[b] = s->czram[b];
+    r.cgram = s->cgram; r.textram = s->text;
+    r.spotram = s->spotram;
+    r.spot_enabled = (s->spot_enable & 1) && (s->chipselect & 0xC000);
+    r.spriteram = s->sprite; r.spriteram_size = sizeof s->sprite;
+    r.vics = s->vics;        r.vics_size = sizeof s->vics;
+    for (int i = 0; i < 0x20; i++) r.vics_ctl[i] = s->vics_ctl[i];
     ss22_prepare(&r);
 }
 

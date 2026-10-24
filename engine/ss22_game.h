@@ -138,6 +138,26 @@ void ss22_snd_debug(char *buf, int n);
 bool ss22_video_init(const char *rom_dir);
 void ss22_video_prepare(void);           /* latch the board's video state and walk polygon RAM: once per frame */
 bool ss22_video_load_dump(const char *dir, int frame);   /* MAME's state (tools/mame/vid_dump.lua) into g_ss22, for --render-dump */
+
+/* RENDER-THREAD DECOUPLING (Quest external host). ss22_prepare writes engine globals -- qbuf, g_fog, direct_palette,
+ * g_eng_pal_gen, the tex bake cache -- that ss22_draw reads, so prepare and draw must run on ONE thread. To pipeline render
+ * with emulation the emulation thread SNAPSHOTS the board's video RAM (ss22_video_snapshot) and the render thread runs
+ * ss22_prepare + ss22_draw over the snapshot (ss22_prepare_snapshot), so every prepared global is touched only by the render
+ * thread. The only cross-thread data is the snapshot (~0.6 MB). Unused unless a host installs the prepare hook below. */
+typedef struct {
+    uint32_t poly[SS22_POLY_WORDS];
+    uint8_t  pal[SS22_PAL_SIZE], mixer[SS22_MIXER_SIZE], cgram[SS22_CGRAM_SIZE], text[SS22_TEXT_SIZE];
+    uint8_t  sprite[SS22_SPRITE_SIZE], vics[SS22_VICS_SIZE];
+    uint16_t czattr[8], tilemapattr[8], czram[4][256], spotram[0x800];
+    uint32_t vics_ctl[0x20];
+    uint16_t spot_enable; uint32_t chipselect;
+    int      walk;
+} ss22_vsnap;
+void ss22_video_snapshot(ss22_vsnap *dst);       /* emulation thread: deep-copy g_ss22's video regions + the walk flag */
+void ss22_prepare_snapshot(const ss22_vsnap *s); /* render thread: ss22_prepare over the snapshot (not live g_ss22) */
+/* ss22_video_prepare() calls `hook` instead of ss22_prepare when set -- the Quest host snapshots on the emulation thread and
+ * prepares+draws on the render thread. NULL (default) = ss22_prepare inline on the caller's thread, as Apple/desktop do. */
+void ss22_video_set_prepare_hook(void (*hook)(void));
 void ss22_video_pdp_begin(void);         /* master DSP port 2 read (engine/frame_rule.h) */
 void ss22_video_render_refresh(void);    /* master DSP port 8 write */
 
