@@ -323,6 +323,97 @@ static void draw_sprite(const sprite_item *it)
     glDisable(GL_TEXTURE_2D);
 }
 
+#if defined(ENG_GL_GLES)
+/* QUEST: batch a RUN of consecutive sprites (all drawn before the next polygon -- same z band, so no reorder across a
+ * priority boundary) to collapse ~N per-sprite flushes into ~1. Today each sprite re-uploads the ONE shared spr_tex, so the
+ * next sprite's upload flushes the previous sprite's draw -> one flush per sprite (155 sprites -> 155 flushes -> ~23 ms on the
+ * render thread). Instead, pack the run's sprites into slots of ONE atlas texture: upload each slot (no draw between them, so
+ * no flush), then draw every quad with its atlas UVs -- all sharing the bound atlas + the one blend state, so glgles batches
+ * them into a SINGLE draw. Pixel-identical: same sprites, same order (quads emitted in run order = same back-to-front blend),
+ * same blend/alpha, same prio_mask, same HUD dx; only the texture's location moves. If the atlas fills, a page break costs one
+ * extra flush (glgles flushes the pending page's quads before the next slot upload overwrites the atlas -- safe). GLES only;
+ * glmetal (Apple) and SDL desktop keep the per-sprite draw_sprite above, byte-for-byte. */
+#define SPR_ATLAS_DIM 2048
+static GLuint   spr_atlas;
+static uint8_t *spr_atlas_buf;                      /* CPU side of the atlas: rasterise here, upload each page in ONE call */
+static int      spr_slot_x[1024], spr_slot_y[1024]; /* per-run sprite atlas slot (ni <= 1024) */
+
+static void tex_alloc_atlas(GLuint *t)
+{
+    glGenTextures(1, t);
+    glBindTexture(GL_TEXTURE_2D, *t);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, SPR_ATLAS_DIM, SPR_ATLAS_DIM, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+}
+
+static void draw_sprite_run(const sprite_item *run, int n)
+{
+    if (n <= 0) return;
+    if (!spr_buf && !(spr_buf = malloc((size_t)SPR_W * SPR_H * 4))) return;
+    if (!spr_atlas_buf && !(spr_atlas_buf = malloc((size_t)SPR_ATLAS_DIM * SPR_ATLAS_DIM * 4))) { draw_sprite(&run[0]); return; }
+    if (!spr_atlas) tex_alloc_atlas(&spr_atlas);
+    const float inv = 1.0f / (float)SPR_ATLAS_DIM;
+    int i = 0;
+    while (i < n) {
+        int cx = 0, cy = 0, rowh = 0, page_w = 0, page_start = i;
+        /* phase 1: pack + rasterise this page's sprites into the CPU atlas buffer (no GL yet) */
+        for (; i < n; i++) {
+            const sprite_item *it = &run[i];
+            spr_slot_x[i] = -1;
+            if (it->w <= 0 || it->h <= 0) continue;
+            if (it->w > SPR_ATLAS_DIM || it->h > SPR_ATLAS_DIM) { draw_sprite(it); continue; }  /* never for SS22; safe fallback */
+            if (cx + it->w > SPR_ATLAS_DIM) { cx = 0; cy += rowh; rowh = 0; }   /* next shelf */
+            if (cy + it->h > SPR_ATLAS_DIM) break;                              /* atlas full: start a new page */
+            sprite_render_item(&sst, &g_fog, it, spr_buf, 1);
+            if (it->prioverchar) {            /* the text layer shows nothing under this sprite's pixels (unchanged) */
+                for (int y = 0; y < it->h; y++)
+                    for (int x = 0; x < it->w; x++)
+                        if (spr_buf[((size_t)y * it->w + x) * 4 + 3]) prio_mask[(size_t)(it->y0 + y) * SPR_W + it->x0 + x] = 1;
+                prio_any = true;
+            }
+            for (int y = 0; y < it->h; y++)   /* tight w-row raster -> atlas slot (stride SPR_ATLAS_DIM) */
+                memcpy(spr_atlas_buf + (((size_t)(cy + y) * SPR_ATLAS_DIM + cx) << 2), spr_buf + ((size_t)y * it->w << 2), (size_t)it->w << 2);
+            spr_slot_x[i] = cx; spr_slot_y[i] = cy;
+            cx += it->w; if (cx > page_w) page_w = cx; if (it->h > rowh) rowh = it->h;
+        }
+        if (i == page_start) { i++; continue; }   /* a single oversized sprite was handled individually above */
+        /* upload this page's used region in ONE call (dense shelf packing -> the bbox is almost all real pixels; the few gaps
+         * are never sampled), then draw every quad -- one bound atlas + one blend state -> glgles batches into a SINGLE draw.
+         * A later page's upload first flushes these quads (glgles flushes pending before overwriting the texture), so reusing
+         * the one atlas across pages is safe. */
+        const int page_h = cy + rowh;
+        glBindTexture(GL_TEXTURE_2D, spr_atlas);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, SPR_ATLAS_DIM);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, page_w, page_h, GL_RGBA, GL_UNSIGNED_BYTE, spr_atlas_buf);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        glEnable(GL_TEXTURE_2D);
+        glDisable(GL_ALPHA_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+        for (int k = page_start; k < i; k++) {
+            if (spr_slot_x[k] < 0) continue;
+            const sprite_item *it = &run[k];
+            const float u0 = spr_slot_x[k] * inv, v0 = spr_slot_y[k] * inv;
+            const float u1 = (spr_slot_x[k] + it->w) * inv, v1 = (spr_slot_y[k] + it->h) * inv;
+            const int dx = (g_eng_hud_e && hud_cfg && (int)(it->z & 0x1FFFFF) <= hud_cfg->sprite_zmax) ? eng_hud_dx(it->x0 + it->w / 2.0) : 0;
+            glBegin(GL_QUADS);
+            glTexCoord2f(u0, v0); glVertex2f((float)(it->x0 + dx),          (float)it->y0);
+            glTexCoord2f(u1, v0); glVertex2f((float)(it->x0 + it->w + dx),  (float)it->y0);
+            glTexCoord2f(u1, v1); glVertex2f((float)(it->x0 + it->w + dx),  (float)(it->y0 + it->h));
+            glTexCoord2f(u0, v1); glVertex2f((float)(it->x0 + dx),          (float)(it->y0 + it->h));
+            glEnd();
+        }
+    }
+    glDisable(GL_BLEND);
+    glEnable(GL_ALPHA_TEST);
+    glDisable(GL_TEXTURE_2D);
+}
+#endif
+
 /* the text tilemap, drawn last: transparent where it draws nothing, its alpha left for GL to blend. text_render is a
  * pure function of the RAM it reads, so it re-renders only when a hash of those inputs changes. */
 /* WIDESCREEN: a full-screen SHADE in the text layer (Dirt Dash's jungle: black, translucent, darkest at the top and bottom -- MAME's text spot/alpha) is
@@ -660,7 +751,19 @@ static void draw_frame(int vw, int vh, const geo_quad *qs, int nq, bool layers2d
     while (qi < nq || si < nspr) {
         const uint32_t qz = qi < nq ? (uint32_t)(qs[qi].zsort & 0xFFFFFF) : 0;
         const uint32_t sz = si < nspr ? items[si].z : 0;
-        if (si < nspr && (qi >= nq || sz >= qz)) { eng_draw_end(); draw_sprite(&items[si++]); eng_draw_resume(); }
+        if (si < nspr && (qi >= nq || sz >= qz)) {
+#if defined(ENG_GL_GLES)
+            /* QUEST: draw the whole run of sprites that precede this polygon (same z band) as one atlas batch, not one flush
+             * each -- same order, same composite (see draw_sprite_run). The run is exactly the sprites the per-sprite loop
+             * below would draw before advancing qi, so the merge order is unchanged. */
+            int run = si;
+            while (run < nspr && (qi >= nq || items[run].z >= qz)) run++;
+            eng_draw_end(); draw_sprite_run(&items[si], run - si); eng_draw_resume();
+            si = run;
+#else
+            eng_draw_end(); draw_sprite(&items[si++]); eng_draw_resume();
+#endif
+        }
         else eng_draw_quad(&qs[qi++], &cfg);
     }
     eng_draw_end();
