@@ -47,6 +47,9 @@
 #define RGL_SYNC_GPU_COMMANDS_COMPLETE 0x9117
 #define RGL_MAJOR_VERSION          0x821B
 #define RGL_MINOR_VERSION          0x821C
+#define RGL_TEXTURE_2D_ARRAY       0x8C1A   /* MULTIVIEW: the 2-layer colour target both eyes render to in one pass */
+#define RGL_READ_FRAMEBUFFER       0x8CA8
+#define RGL_DRAW_FRAMEBUFFER       0x8CA9
 
 typedef void *GLsync_;
 typedef unsigned long long GLuint64_;
@@ -57,6 +60,9 @@ typedef unsigned long long GLuint64_;
     X(void,  DeleteTextures,    (GLsizei, const GLuint *)) \
     X(void,  BindTexture,       (GLenum, GLuint)) \
     X(void,  TexImage2D,        (GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *)) \
+    X(void,  TexImage3D,        (GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *)) \
+    X(void,  FramebufferTextureLayer, (GLenum, GLenum, GLuint, GLint, GLint)) \
+    X(void,  BlitFramebuffer,   (GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum)) \
     X(void,  TexSubImage2D,     (GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *)) \
     X(void,  TexParameteri,     (GLenum, GLenum, GLint)) \
     X(void,  ActiveTexture,     (GLenum)) \
@@ -129,6 +135,11 @@ typedef unsigned long long GLuint64_;
 #define X(ret, name, args) typedef ret (APIENTRY *pfn_##name) args; static pfn_##name R_##name;
 RGL_LIST(X)
 #undef X
+
+/* MULTIVIEW (GL_OVR_multiview2): loaded SEPARATELY -- it may be absent, and load_gl() must not fail the whole backend over it
+ * (the per-eye 2-FBO fallback then runs). Not an engine-facing gl* name, so glgles_names.h / the symbol check are untouched. */
+typedef void (APIENTRY *pfn_FramebufferTextureMultiviewOVR)(GLenum, GLenum, GLuint, GLint, GLint, GLsizei);
+static pfn_FramebufferTextureMultiviewOVR R_FramebufferTextureMultiviewOVR;
 
 static void *s_libgl;
 static void *gl_load(const char *n)
@@ -221,13 +232,24 @@ static int st_mode, st_L, st_R;
  * the immediate-mode 2D layers. Set by glgles_set_bias_array. */
 static const float *bias_arr;
 
-static GLuint prog;                   /* the uber-program */
-static struct { GLint mvp, tm, yflip, eye, cfg, srcrgb, oprgb, srca, opa, env, scale, afunc, aref, tex0, tex1; } U;
+typedef struct { GLint mvp, tm, yflip, eye, cfg, srcrgb, oprgb, srca, opa, env, scale, afunc, aref, tex0, tex1; } gl_uni;
+static GLuint prog_mono;              /* the uber-program, u_eye uniform (mono + the 2-FBO stereo fallback) */
+static GLuint prog_mv;               /* MULTIVIEW variant: num_views=2, eye from gl_ViewID_OVR (0 if unavailable) */
+static GLuint prog;                   /* the active program (= prog_mono or prog_mv) */
+static gl_uni U, U_mono, U_mv;        /* U = the active program's uniform locations (a copy of U_mono / U_mv) */
 static GLuint prog_post;              /* framebuffer-fetch gamma */
 static GLuint prog_post_copy;         /* copy-and-redraw gamma (no fetch) */
-static struct { GLint lut; } UP;
+static GLuint prog_post_mv;           /* MULTIVIEW framebuffer-fetch gamma (both layers in one pass; 0 if no multiview) */
+static struct { GLint lut; } UP, UPMV;
 static struct { GLint lut, src; } UPC;
 static bool fetch_ok;
+/* MULTIVIEW: render both eyes in ONE pass to a 2-layer array (no per-flush FBO switch), then resolve (2 blits) the layers into
+ * the two 2D publish textures the host already hands the app -- so the app / filter / contract are unchanged. mv_ok = the path
+ * is available (GL_OVR_multiview2 + framebuffer-fetch gamma + the entry point); mv_active = this frame is using it. */
+static bool mv_ok;
+static int  mv_active;
+static GLuint mv_tex, mv_fbo, resolve_fbo;
+static int  mv_w, mv_h;
 static GLuint vao;
 /* ONE streaming vertex buffer. The attrib layout is bound to it ONCE at create (it is the only GL_ARRAY_BUFFER glgles ever
  * binds), so flush_pending no longer re-issues the 4 VertexAttribPointer calls every flush -- it only orphans + uploads + draws.
@@ -400,6 +422,32 @@ static const char *VS_SRC =
 "    v_tc = u_tm * a_tc;\n"
 "}\n";
 
+/* MULTIVIEW variant: num_views=2 writes both eye layers in ONE draw; the eye sign comes from gl_ViewID_OVR (view 0 = left = -1,
+ * view 1 = right = +1), reproducing the per-eye u_eye of VS_SRC exactly. Same a_bias off-axis shift. No u_eye uniform. */
+static const char *VS_SRC_MV =
+"#version 300 es\n"
+"#extension GL_OVR_multiview2 : require\n"
+"layout(num_views=2) in;\n"
+"layout(location=0) in vec4 a_pos;\n"
+"layout(location=1) in vec4 a_col;\n"
+"layout(location=2) in vec4 a_tc;\n"
+"layout(location=3) in float a_bias;\n"
+"uniform mat4 u_mvp;\n"
+"uniform mat4 u_tm;\n"
+"uniform float u_yflip;\n"
+"out vec4 v_col;\n"
+"out vec4 v_tc;\n"
+"void main(){\n"
+"    vec4 pp = a_pos;\n"
+"    pp.x += (gl_ViewID_OVR == 0u ? -1.0 : 1.0) * a_bias;\n"
+"    vec4 p = u_mvp * pp;\n"
+"    p.y *= u_yflip;\n"
+"    gl_Position = p;\n"
+"    gl_PointSize = 1.0;\n"
+"    v_col = clamp(a_col, 0.0, 1.0);\n"
+"    v_tc = u_tm * a_tc;\n"
+"}\n";
+
 static const char *FS_SRC =
 "#version 300 es\n"
 "precision highp float;\n"
@@ -485,6 +533,12 @@ static const char *FS_SRC =
 /* gamma: a big triangle from gl_VertexID, the 256-entry per-channel table (post_gl.c's texel centres) */
 static const char *POST_VS =
 "#version 300 es\n"
+"void main(){ vec2 p = vec2((gl_VertexID==1)?3.0:-1.0, (gl_VertexID==2)?3.0:-1.0); gl_Position = vec4(p,0.0,1.0); }\n";
+/* MULTIVIEW gamma VS: the same full-screen triangle drawn to BOTH layers (num_views=2); the fetch FS below runs per view/layer. */
+static const char *POST_VS_MV =
+"#version 300 es\n"
+"#extension GL_OVR_multiview2 : require\n"
+"layout(num_views=2) in;\n"
 "void main(){ vec2 p = vec2((gl_VertexID==1)?3.0:-1.0, (gl_VertexID==2)?3.0:-1.0); gl_Position = vec4(p,0.0,1.0); }\n";
 static const char *POST_FS_FETCH =
 "#version 300 es\n"
@@ -658,14 +712,19 @@ static const GLenum prim_gl[3] = { GL_TRIANGLES, GL_LINES, GL_POINTS };
 static void flush_pending(void)
 {
     if (!pend_on || pend_n == 0) { pend_on = false; return; }
-    /* All of the per-draw GL state (program, viewport, scissor, uniforms, textures) is eye-independent: apply it once, upload
-     * the vertices once. In stereo only the target FBO and u_eye repeat -- the parallax lives in each vertex's bias. */
+    /* Per-draw GL state (viewport, scissor, uniforms, textures) is eye-independent: apply it once, upload the vertices once.
+     * MULTIVIEW: one DrawArrays writes both eye layers (mv_fbo stays bound for the whole frame) -- no per-flush FBO switch.
+     * Fallback: the two-FBO path, one bind + draw per eye with u_eye. */
+    { GLuint want = mv_active ? prog_mv : prog_mono;       /* the multiview VS has no u_eye; the eye comes from gl_ViewID_OVR */
+      if (prog != want) { prog = want; U = mv_active ? U_mv : U_mono; } }
     apply_gl_state(&pend);
     const size_t bytes = (size_t)pend_n * sizeof(Vtx);
     if (bytes > vbo_cap) { while (vbo_cap < bytes) vbo_cap *= 2; R_BufferData(RGL_ARRAY_BUFFER, (GLsizeiptr)vbo_cap, NULL, RGL_STREAM_DRAW); }
     else R_BufferData(RGL_ARRAY_BUFFER, (GLsizeiptr)vbo_cap, NULL, RGL_STREAM_DRAW);  /* orphan: fresh storage, no stall; the attrib layout stays bound to the buffer object */
     R_BufferSubData(RGL_ARRAY_BUFFER, 0, (GLsizeiptr)bytes, pend_v);
-    if (st_mode) {
+    if (mv_active) {
+        R_DrawArrays(prim_gl[pend.prim], 0, pend_n);                                        /* both layers, one draw, mv_fbo already bound */
+    } else if (st_mode) {
         R_Uniform1f(U.eye, -1.0f); bind_target_idx(st_L); R_DrawArrays(prim_gl[pend.prim], 0, pend_n);
         R_Uniform1f(U.eye,  1.0f); bind_target_idx(st_R); R_DrawArrays(prim_gl[pend.prim], 0, pend_n);
     } else {
@@ -910,7 +969,8 @@ void glClear(GLbitfield mask)
     }
     if (mask & GL_DEPTH_BUFFER_BIT) { R_DepthMask(S.depth_mask ? GL_TRUE : GL_FALSE); R_ClearDepthf(S.clear_depth); if (S.depth_mask) gm |= GL_DEPTH_BUFFER_BIT; }
     if (gm) {
-        if (st_mode) { bind_target_idx(st_L); R_Clear(gm); bind_target_idx(st_R); R_Clear(gm); }   /* STEREO: clear both eyes */
+        if (mv_active) { R_BindFramebuffer(RGL_FRAMEBUFFER, mv_fbo); R_Clear(gm); }               /* MULTIVIEW: one clear covers both layers */
+        else if (st_mode) { bind_target_idx(st_L); R_Clear(gm); bind_target_idx(st_R); R_Clear(gm); }   /* STEREO fallback: clear both eyes */
         else { bind_target(); R_Clear(gm); }
     }
     have_applied = false;                 /* scissor / masks / clear state no longer match `applied` */
@@ -1154,6 +1214,16 @@ void *glgles_GetProcAddress(const char *name)
     return NULL;                           /* shaders, programs, framebuffer objects: not provided (as glmetal) */
 }
 
+/* the uber-shader's uniform locations for program `p` (mono and multiview link to different locations for the same names) */
+static void uni_locs(GLuint p, gl_uni *u)
+{
+    u->mvp = R_GetUniformLocation(p, "u_mvp"); u->tm = R_GetUniformLocation(p, "u_tm"); u->yflip = R_GetUniformLocation(p, "u_yflip"); u->eye = R_GetUniformLocation(p, "u_eye");
+    u->cfg = R_GetUniformLocation(p, "u_cfg"); u->srcrgb = R_GetUniformLocation(p, "u_srcrgb"); u->oprgb = R_GetUniformLocation(p, "u_oprgb");
+    u->srca = R_GetUniformLocation(p, "u_srca"); u->opa = R_GetUniformLocation(p, "u_opa"); u->env = R_GetUniformLocation(p, "u_env");
+    u->scale = R_GetUniformLocation(p, "u_scale"); u->afunc = R_GetUniformLocation(p, "u_afunc"); u->aref = R_GetUniformLocation(p, "u_aref");
+    u->tex0 = R_GetUniformLocation(p, "u_tex0"); u->tex1 = R_GetUniformLocation(p, "u_tex1");
+}
+
 /* ------------------------------------------------------------------------------------------------ host API */
 int glgles_create(int w, int h)
 {
@@ -1168,15 +1238,12 @@ int glgles_create(int w, int h)
     fetch_ok = has_ext("GL_EXT_shader_framebuffer_fetch");
     const char *nf = getenv("GLGLES_NO_FETCH"); if (nf && *nf == '1') fetch_ok = false;
 
-    prog = link_prog(VS_SRC, FS_SRC, true);
-    if (!prog) return 0;
-    U.mvp = R_GetUniformLocation(prog, "u_mvp"); U.tm = R_GetUniformLocation(prog, "u_tm"); U.yflip = R_GetUniformLocation(prog, "u_yflip"); U.eye = R_GetUniformLocation(prog, "u_eye");
-    U.cfg = R_GetUniformLocation(prog, "u_cfg"); U.srcrgb = R_GetUniformLocation(prog, "u_srcrgb"); U.oprgb = R_GetUniformLocation(prog, "u_oprgb");
-    U.srca = R_GetUniformLocation(prog, "u_srca"); U.opa = R_GetUniformLocation(prog, "u_opa"); U.env = R_GetUniformLocation(prog, "u_env");
-    U.scale = R_GetUniformLocation(prog, "u_scale"); U.afunc = R_GetUniformLocation(prog, "u_afunc"); U.aref = R_GetUniformLocation(prog, "u_aref");
-    U.tex0 = R_GetUniformLocation(prog, "u_tex0"); U.tex1 = R_GetUniformLocation(prog, "u_tex1");
-    R_UseProgram(prog);
-    R_Uniform1i(U.tex0, 0); R_Uniform1i(U.tex1, 1); R_Uniform1f(U.yflip, 1.0f); R_Uniform1f(U.eye, 0.0f);
+    prog_mono = link_prog(VS_SRC, FS_SRC, true);
+    if (!prog_mono) return 0;
+    uni_locs(prog_mono, &U_mono);
+    R_UseProgram(prog_mono);
+    R_Uniform1i(U_mono.tex0, 0); R_Uniform1i(U_mono.tex1, 1); R_Uniform1f(U_mono.yflip, 1.0f); R_Uniform1f(U_mono.eye, 0.0f);
+    prog = prog_mono; U = U_mono;
 
     prog_post = fetch_ok ? link_prog(POST_VS, POST_FS_FETCH, false) : 0;
     if (prog_post) UP.lut = R_GetUniformLocation(prog_post, "u_lut");
@@ -1184,6 +1251,23 @@ int glgles_create(int w, int h)
     prog_post_copy = link_prog(POST_VS, POST_FS_COPY, false);
     if (prog_post_copy) { UPC.lut = R_GetUniformLocation(prog_post_copy, "u_lut"); UPC.src = R_GetUniformLocation(prog_post_copy, "u_src"); }
     if (!prog_post && !prog_post_copy) fprintf(stderr, "[GLGLES] no gamma program (gamma pass will be skipped)\n");
+
+    /* MULTIVIEW: both eyes in one pass. Needs GL_OVR_multiview2, the entry point, and framebuffer-fetch gamma (the copy-path
+     * gamma cannot run multiview). Absent any of these -> mv_ok stays false and the per-eye 2-FBO path runs (unchanged). */
+    { const char *nm = getenv("GLGLES_NO_MULTIVIEW");
+      mv_ok = fetch_ok && prog_post && !(nm && *nm == '1') && has_ext("GL_OVR_multiview2");
+      if (mv_ok) { R_FramebufferTextureMultiviewOVR = (pfn_FramebufferTextureMultiviewOVR)gl_load("glFramebufferTextureMultiviewOVR"); if (!R_FramebufferTextureMultiviewOVR) mv_ok = false; } }
+    if (mv_ok) {
+        prog_mv = link_prog(VS_SRC_MV, FS_SRC, true);
+        if (prog_mv) { uni_locs(prog_mv, &U_mv); R_UseProgram(prog_mv); R_Uniform1i(U_mv.tex0, 0); R_Uniform1i(U_mv.tex1, 1); R_Uniform1f(U_mv.yflip, 1.0f); }
+        else mv_ok = false;
+    }
+    if (mv_ok) {
+        prog_post_mv = link_prog(POST_VS_MV, POST_FS_FETCH, false);
+        if (prog_post_mv) UPMV.lut = R_GetUniformLocation(prog_post_mv, "u_lut");
+        else mv_ok = false;
+    }
+    R_UseProgram(prog_mono);   /* leave mono active (mono / fallback); flush_pending switches to prog_mv when multiview is on */
 
     R_GenVertexArrays(1, &vao); R_BindVertexArray(vao);
     R_EnableVertexAttribArray(0); R_EnableVertexAttribArray(1); R_EnableVertexAttribArray(2); R_EnableVertexAttribArray(3);
@@ -1217,7 +1301,8 @@ int glgles_create(int w, int h)
     have_applied = false; applied_prog = 0;
     created = true;
     snprintf(renderer_str, sizeof renderer_str, "glgles on %s (%s gamma)", (const char *)R_GetString(GL_RENDERER), fetch_ok ? "framebuffer-fetch" : "copy");
-    fprintf(stderr, "[GLGLES] %dx%d, %s; gamma by %s\n", w, h, renderer_str, fetch_ok ? "framebuffer fetch" : "copy-and-redraw");
+    fprintf(stderr, "[GLGLES] %dx%d, %s; gamma by %s; stereo = %s\n", w, h, renderer_str, fetch_ok ? "framebuffer fetch" : "copy-and-redraw",
+            mv_ok ? "OVR_multiview2 (one pass, both eyes)" : "two FBOs (per eye)");
     return 1;
 }
 
@@ -1251,8 +1336,35 @@ int glgles_width(void) { return created ? tgt[cur_set].w : 0; }
 int glgles_height(void) { return created ? tgt[cur_set].h : 0; }
 int glgles_target_bottom_up(void) { return 1; }
 
-/* STEREO: draw the next frame to BOTH `left` and `right` targets from one emitted stream (see the Vtx.bias note). Each is made
- * at target 0's size on first use. Until glgles_stereo_end, every flush / clear / gamma pass runs twice, with u_eye -1 then +1. */
+/* MULTIVIEW: the 2-layer colour array both eyes render to in one pass, its multiview FBO, and a scratch read-FBO for the
+ * resolve blit. No depth attachment -- the SS22 polygon pass is painter-sorted with the depth test off (ss22_gl.c), so the
+ * framebuffer is colour-only and still complete. One array, reused every frame; resolved into the slot's two 2D textures. */
+static bool mv_make(int w, int h)
+{
+    if (mv_fbo && mv_w == w && mv_h == h) return true;
+    if (mv_tex) { R_DeleteTextures(1, &mv_tex); mv_tex = 0; }
+    if (mv_fbo) { R_DeleteFramebuffers(1, &mv_fbo); mv_fbo = 0; }
+    R_ActiveTexture(GL_TEXTURE0);
+    R_GenTextures(1, &mv_tex);
+    R_BindTexture(RGL_TEXTURE_2D_ARRAY, mv_tex);
+    R_TexImage3D(RGL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, w, h, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    R_TexParameteri(RGL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    R_TexParameteri(RGL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    R_TexParameteri(RGL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    R_TexParameteri(RGL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    R_GenFramebuffers(1, &mv_fbo);
+    R_BindFramebuffer(RGL_FRAMEBUFFER, mv_fbo);
+    R_FramebufferTextureMultiviewOVR(RGL_FRAMEBUFFER, RGL_COLOR_ATTACHMENT0, mv_tex, 0, 0, 2);
+    const GLenum st = R_CheckFramebufferStatus(RGL_FRAMEBUFFER);
+    if (st != RGL_FRAMEBUFFER_COMPLETE) { fprintf(stderr, "[GLGLES] multiview FBO incomplete (0x%x): using the two-FBO path\n", st); return false; }
+    if (!resolve_fbo) R_GenFramebuffers(1, &resolve_fbo);
+    mv_w = w; mv_h = h;
+    return true;
+}
+
+/* STEREO: draw the next frame to BOTH `left` and `right` from one emitted stream (see the Vtx.bias note). MULTIVIEW renders
+ * both eyes in ONE pass to a 2-layer array (no per-flush FBO switch) and resolves it into these two 2D textures at _end; the
+ * fallback runs every flush / clear / gamma twice, one eye each. Either way the host publishes `left`/`right` unchanged. */
 void glgles_stereo_begin(int left, int right)
 {
     if (!created) return;
@@ -1262,13 +1374,38 @@ void glgles_stereo_begin(int left, int right)
     glgles_set_target(right);                 /* make `right` (and flush), then settle on `left` as the representative */
     glgles_set_target(left);
     st_L = left; st_R = right; st_mode = 1;
+    mv_active = 0;
+    if (mv_ok) {
+        if (mv_make(base_w, base_h)) {
+            mv_active = 1;
+            R_BindFramebuffer(RGL_FRAMEBUFFER, mv_fbo);   /* bound for the whole frame: every flush/clear/gamma hits both layers */
+            have_applied = false;                         /* mv_make disturbed the unit-0 texture binding */
+        } else {
+            mv_ok = false;                                /* one-time failure: stay on the two-FBO path for the rest of the run */
+        }
+    }
 }
 void glgles_stereo_end(void)
 {
     if (!created) return;
     flush_pending();
+    if (mv_active) {
+        /* resolve the 2-layer array into the slot's two 2D publish textures -- two blits a frame, versus the per-flush FBO
+         * switches the fallback (and the committed path) pay. Same size, NEAREST = an exact copy; rows unflipped (both are
+         * bottom-up), so the published orientation is unchanged. */
+        R_BindFramebuffer(RGL_READ_FRAMEBUFFER, resolve_fbo);
+        R_FramebufferTextureLayer(RGL_READ_FRAMEBUFFER, RGL_COLOR_ATTACHMENT0, mv_tex, 0, 0);
+        R_BindFramebuffer(RGL_DRAW_FRAMEBUFFER, tgt[st_L].fbo);
+        R_BlitFramebuffer(0, 0, mv_w, mv_h, 0, 0, tgt[st_L].w, tgt[st_L].h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        R_FramebufferTextureLayer(RGL_READ_FRAMEBUFFER, RGL_COLOR_ATTACHMENT0, mv_tex, 0, 1);
+        R_BindFramebuffer(RGL_DRAW_FRAMEBUFFER, tgt[st_R].fbo);
+        R_BlitFramebuffer(0, 0, mv_w, mv_h, 0, 0, tgt[st_R].w, tgt[st_R].h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        R_BindFramebuffer(RGL_FRAMEBUFFER, tgt[cur_set].fbo);   /* a sane binding for whatever draws next */
+        mv_active = 0;
+    }
     st_mode = 0;
-    R_UseProgram(prog); applied_prog = prog;
+    prog = prog_mono; U = U_mono;
+    R_UseProgram(prog_mono); applied_prog = prog_mono;
     R_Uniform1f(U.eye, 0.0f);                 /* back to mono: bias has no effect */
     have_applied = false;
 }
@@ -1332,7 +1469,12 @@ void glgles_post_lut(const uint8_t lut[3][256], int vw, int vh)
     R_Disable(GL_DEPTH_TEST); R_Disable(GL_BLEND); R_Disable(GL_SCISSOR_TEST);
     R_DepthMask(GL_FALSE); R_ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     R_Viewport(0, 0, vw, vh);
-    if (st_mode) { post_lut_one(st_L, vw, vh); post_lut_one(st_R, vw, vh); }   /* STEREO: gamma each eye */
+    if (mv_active) {                                                            /* MULTIVIEW: gamma both layers in one pass (fetch) */
+        R_BindFramebuffer(RGL_FRAMEBUFFER, mv_fbo);
+        R_UseProgram(prog_post_mv);
+        R_Uniform1i(UPMV.lut, 1);
+        R_DrawArrays(GL_TRIANGLES, 0, 3);
+    } else if (st_mode) { post_lut_one(st_L, vw, vh); post_lut_one(st_R, vw, vh); }   /* STEREO fallback: gamma each eye */
     else post_lut_one(cur_set, vw, vh);
     applied_prog = 0; have_applied = false;   /* program/state no longer match the uber-shader's cache */
 }
@@ -1351,9 +1493,14 @@ void glgles_destroy(void)
         if (vao) R_DeleteVertexArrays(1, &vao);
         if (lut_tex) R_DeleteTextures(1, &lut_tex);
         if (scratch_tex) R_DeleteTextures(1, &scratch_tex);
-        if (prog) R_DeleteProgram(prog);
+        if (mv_tex) R_DeleteTextures(1, &mv_tex);
+        if (mv_fbo) R_DeleteFramebuffers(1, &mv_fbo);
+        if (resolve_fbo) R_DeleteFramebuffers(1, &resolve_fbo);
+        if (prog_mono) R_DeleteProgram(prog_mono);
+        if (prog_mv) R_DeleteProgram(prog_mv);
         if (prog_post) R_DeleteProgram(prog_post);
         if (prog_post_copy) R_DeleteProgram(prog_post_copy);
+        if (prog_post_mv) R_DeleteProgram(prog_post_mv);
     }
     free(texs); texs = NULL; ntexs = 0;
     free(imm); imm = NULL; imm_cap = imm_n = 0;
@@ -1363,7 +1510,8 @@ void glgles_destroy(void)
     memset(tgt, 0, sizeof tgt);
     vbo = 0; vbo_cap = 0;
     vao = lut_tex = scratch_tex = 0; scratch_w = scratch_h = 0;
-    prog = prog_post = prog_post_copy = 0; applied_prog = 0; have_applied = false;
+    prog = prog_mono = prog_mv = prog_post = prog_post_copy = prog_post_mv = 0; applied_prog = 0; have_applied = false;
+    mv_ok = false; mv_active = 0; mv_tex = mv_fbo = resolve_fbo = 0; mv_w = mv_h = 0;
     st_mode = 0; st_L = st_R = 0; bias_arr = NULL;
     created = false;
     if (s_libgl) { dlclose(s_libgl); s_libgl = NULL; }
