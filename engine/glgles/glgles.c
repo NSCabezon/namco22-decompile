@@ -231,6 +231,7 @@ static int st_mode, st_L, st_R;
 /* STEREO: the per-vertex bias source for the client-array draw path (quad_gl's bb_b). NULL = no bias (0), as in mono and for
  * the immediate-mode 2D layers. Set by glgles_set_bias_array. */
 static const float *bias_arr;
+static unsigned g_flush_n;            /* batch flushes (= draw-call runs) since glgles_take_flushes(); a heavy-combat diagnostic */
 
 typedef struct { GLint mvp, tm, yflip, eye, cfg, srcrgb, oprgb, srca, opa, env, scale, afunc, aref, tex0, tex1; } gl_uni;
 static GLuint prog_mono;              /* the uber-program, u_eye uniform (mono + the 2-FBO stereo fallback) */
@@ -712,6 +713,7 @@ static const GLenum prim_gl[3] = { GL_TRIANGLES, GL_LINES, GL_POINTS };
 static void flush_pending(void)
 {
     if (!pend_on || pend_n == 0) { pend_on = false; return; }
+    g_flush_n++;
     /* Per-draw GL state (viewport, scissor, uniforms, textures) is eye-independent: apply it once, upload the vertices once.
      * MULTIVIEW: one DrawArrays writes both eye layers (mv_fbo stays bound for the whole frame) -- no per-flush FBO switch.
      * Fallback: the two-FBO path, one bind + draw per eye with u_eye. */
@@ -840,6 +842,12 @@ static void fetch(const carray *c, int idx, float *out, bool normalize)
 {
     const int st = c->stride ? c->stride : c->size * type_size(c->type);
     const uint8_t *p = (const uint8_t *)c->ptr + (size_t)idx * (size_t)st;
+    if (c->type == GL_FLOAT) {                      /* the hot case (quad_gl's bb_* arrays are all GL_FLOAT): one memcpy, no
+                                                     * per-component switch -- byte-identical to the GL_FLOAT branch below */
+        const int n = c->size < 4 ? c->size : 4;
+        memcpy(out, p, (size_t)n * sizeof(float));
+        return;
+    }
     for (int k = 0; k < c->size && k < 4; k++) {
         switch (c->type) {
         case GL_FLOAT: { float f; memcpy(&f, p + k*4, 4); out[k] = f; break; }
@@ -1411,6 +1419,10 @@ void glgles_stereo_end(void)
 }
 /* STEREO: the per-vertex off-axis shift for the next client-array draws (quad_gl's bb_b), one float a vertex; NULL = none. */
 void glgles_set_bias_array(const float *bias) { bias_arr = bias; }
+
+/* diagnostic: batch flushes (draw-call runs) since the last call, then reset. A heavy frame's flush count is how many state
+ * breaks it paid; the host adds it to the render stats line. */
+unsigned glgles_take_flushes(void) { unsigned f = g_flush_n; g_flush_n = 0; return f; }
 
 void *glgles_end_frame(void)
 {

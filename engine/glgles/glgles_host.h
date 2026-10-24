@@ -51,6 +51,8 @@ void glgles_stereo_end(void);
 /* STEREO: the per-vertex off-axis shift source for the upcoming client-array draws, one float (pre-mvp screen px) a vertex;
  * NULL = none (bias 0). quad_gl sets this to its triangle-batch array for the 3D quad pass and clears it otherwise. */
 void glgles_set_bias_array(const float *bias);
+/* Diagnostic: batch flushes (draw-call runs) issued since the last call, then reset to 0. */
+unsigned glgles_take_flushes(void);
 
 /* End the frame: flush the pending draw, glFlush, and return a fresh GLsync (cast to void *) the caller publishes so the
  * app can glWaitSync on it before sampling the target textures. The backend does not wait. */
