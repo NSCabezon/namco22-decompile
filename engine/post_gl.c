@@ -142,6 +142,16 @@ void eng_post_lut(const uint8_t lut[3][256], int vw, int vh)
     glmetal_post_lut(lut, vw, vh);
     return;
 #endif
+#ifdef ENG_GL_GLES
+    /* glgles (Android / Meta Quest): the frame is already the backend's FBO texture -- the table is applied where it lies
+     * (framebuffer fetch on Adreno; else a copy-and-redraw). The GL state this leaves behind is reset by the backend. */
+    if (state == 0) { state = 1; fprintf(stderr, "[POST] final colour stage: glgles\n"); }
+    glDisable(GL_BLEND); glDisable(GL_ALPHA_TEST); glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, vw, vh);
+    glColor4f(1, 1, 1, 1);
+    glgles_post_lut(lut, vw, vh);
+    return;
+#endif
 #ifdef ENG_GL_ES_BACKEND
     /* iOS (gl4es): copying the whole frame into a texture costs ~12 ms a frame on Vision Pro, most of the budget.
      * An identity table changes no pixel, so skip the pass then. */

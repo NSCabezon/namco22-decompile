@@ -2,20 +2,49 @@
  * own state is ordinary, so it outlives the reset it does. */
 #include "tc_reset.h"
 #include "tc_reset_core.h"
-#include <os/lock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <malloc/malloc.h>
 
-/* the sections' bounds, made by the linker (ld64 / ld-prime: section$start$SEG$SECT); arrays of unknown size, so _FORTIFY_SOURCE
- * does not take them for one char */
+/* Platform shims: Mach-O (Apple) uses os_unfair_lock and malloc_size; ELF (Android / Meta Quest) uses a pthread mutex and
+ * malloc_usable_size. The rest of the file is identical. */
+#if defined(__MACH__)
+#include <os/lock.h>
+#include <malloc/malloc.h>
+#define TCG_LOCK_T       os_unfair_lock
+#define TCG_LOCK_INIT    OS_UNFAIR_LOCK_INIT
+#define TCG_LOCK(p)      os_unfair_lock_lock(p)
+#define TCG_UNLOCK(p)    os_unfair_lock_unlock(p)
+#define TCG_MALLOC_SIZE(p) malloc_size(p)
+#else
+#include <pthread.h>
+#include <malloc.h>
+#define TCG_LOCK_T       pthread_mutex_t
+#define TCG_LOCK_INIT    PTHREAD_MUTEX_INITIALIZER
+#define TCG_LOCK(p)      pthread_mutex_lock(p)
+#define TCG_UNLOCK(p)    pthread_mutex_unlock(p)
+#define TCG_MALLOC_SIZE(p) malloc_usable_size(p)
+#endif
+
+/* the sections' bounds, made by the linker; arrays of unknown size, so _FORTIFY_SOURCE does not take them for one char */
+#if defined(__MACH__)
+/* ld64 / ld-prime: section$start$SEG$SECT */
 extern char tcg_data_start[]__asm("section$start$__DATA$__tcg_data");
 extern char tcg_data_end[]  __asm("section$end$__DATA$__tcg_data");
 extern char tcg_bss_start[] __asm("section$start$__DATA$__tcg_bss");
 extern char tcg_bss_end[]   __asm("section$end$__DATA$__tcg_bss");
+#else
+/* ELF (lld / GNU ld): __start_<name> / __stop_<name> for a section whose name is a C identifier (tc_reset.h names the
+ * sections __tcg_data / __tcg_bss for this reason) */
+extern char __start___tcg_data[], __stop___tcg_data[];
+extern char __start___tcg_bss[],  __stop___tcg_bss[];
+#define tcg_data_start __start___tcg_data
+#define tcg_data_end   __stop___tcg_data
+#define tcg_bss_start  __start___tcg_bss
+#define tcg_bss_end    __stop___tcg_bss
+#endif
 
 static void  *data0;                 /* __tcg_data as the image was loaded */
 static size_t data_n;
@@ -29,7 +58,7 @@ __attribute__((constructor)) static void tcg_snapshot(void)
 }
 
 /* ---- the live blocks: an open-addressed set of pointers (0 empty, 1 deleted) */
-static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;
+static TCG_LOCK_T lk = TCG_LOCK_INIT;
 static uintptr_t *set;
 static size_t cap, used, live;       /* slots, slots not empty (live + deleted), live blocks */
 
@@ -63,7 +92,7 @@ static bool take_locked(uintptr_t p)
 }
 static void *noted(void *p)
 {
-    if (p) { os_unfair_lock_lock(&lk); put_locked((uintptr_t)p); os_unfair_lock_unlock(&lk); }
+    if (p) { TCG_LOCK(&lk); put_locked((uintptr_t)p); TCG_UNLOCK(&lk); }
     return p;
 }
 
@@ -78,10 +107,10 @@ static void *big_map(size_t n)
 {
     void *p = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (p == MAP_FAILED) return NULL;
-    os_unfair_lock_lock(&lk);
-    if (nbig == BIG_MAX) { os_unfair_lock_unlock(&lk); munmap(p, n); return NULL; }
+    TCG_LOCK(&lk);
+    if (nbig == BIG_MAX) { TCG_UNLOCK(&lk); munmap(p, n); return NULL; }
     big[nbig].p = p; big[nbig].n = n; nbig++;
-    os_unfair_lock_unlock(&lk);
+    TCG_UNLOCK(&lk);
     return p;
 }
 static size_t big_take_locked(void *p)              /* its size if p is a big block (then forgotten), else 0 */
@@ -101,32 +130,32 @@ char *tcg_strdup(const char *s) { return noted(strdup(s)); }
 void tcg_free(void *p)
 {
     if (!p) return;
-    os_unfair_lock_lock(&lk);
+    TCG_LOCK(&lk);
     const size_t bn = big_take_locked(p);
     if (!bn) take_locked((uintptr_t)p);
-    os_unfair_lock_unlock(&lk);
+    TCG_UNLOCK(&lk);
     if (bn) munmap(p, bn);
     else free(p);                    /* a block the C library made (realpath's) was never noted: freed all the same */
 }
 void *tcg_realloc(void *p, size_t n)
 {
     if (!p) return tcg_malloc(n);
-    os_unfair_lock_lock(&lk);
+    TCG_LOCK(&lk);
     size_t bn = 0;
     for (int i = 0; i < nbig; i++) if (big[i].p == p) bn = big[i].n;
-    os_unfair_lock_unlock(&lk);
+    TCG_UNLOCK(&lk);
     if (bn || n >= BIG) {                           /* to, from or between big blocks: a new block and a copy */
         size_t old = bn;
-        if (!bn) old = malloc_size(p);
+        if (!bn) old = TCG_MALLOC_SIZE(p);
         void *q = tcg_malloc(n);
         if (!q) return NULL;
         memcpy(q, p, old < n ? old : n);
         tcg_free(p);
         return q;
     }
-    os_unfair_lock_lock(&lk);
+    TCG_LOCK(&lk);
     const bool mine = take_locked((uintptr_t)p);
-    os_unfair_lock_unlock(&lk);
+    TCG_UNLOCK(&lk);
     void *q = realloc(p, n);
     if (!q) { if (mine) noted(p); return NULL; }  /* failed: the old block is still live */
     return mine ? noted(q) : q;
@@ -134,14 +163,14 @@ void *tcg_realloc(void *p, size_t n)
 
 bool tcg_reset(size_t *blocks_freed)
 {
-    os_unfair_lock_lock(&lk);
+    TCG_LOCK(&lk);
     size_t n = 0;
     for (size_t i = 0; i < cap; i++) if (set[i] > 1) { free((void *)set[i]); n++; }
     if (set) memset(set, 0, cap * sizeof *set);
     used = live = 0;
     for (int i = 0; i < nbig; i++) { munmap(big[i].p, big[i].n); n++; }
     nbig = 0;
-    os_unfair_lock_unlock(&lk);
+    TCG_UNLOCK(&lk);
     if (blocks_freed) *blocks_freed = n;
     if (!data0) return false;
     memcpy(tcg_data_start, data0, data_n);
@@ -156,6 +185,6 @@ bool tcg_reset(size_t *blocks_freed)
     return true;
 }
 
-size_t tcg_live_blocks(void) { os_unfair_lock_lock(&lk); const size_t n = live + (size_t)nbig; os_unfair_lock_unlock(&lk); return n; }
+size_t tcg_live_blocks(void) { TCG_LOCK(&lk); const size_t n = live + (size_t)nbig; TCG_UNLOCK(&lk); return n; }
 size_t tcg_data_size(void) { return data_n; }
 size_t tcg_bss_size(void) { return (size_t)(tcg_bss_end - tcg_bss_start); }

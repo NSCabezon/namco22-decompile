@@ -706,8 +706,8 @@ static void draw_frame(int vw, int vh, const geo_quad *qs, int nq, bool layers2d
 /* ------------------------------------------------------------------ GL context helpers */
 void eng_gl_context_attributes(void)
 {
-#if defined(ENG_GL_METAL)
-    /* glmetal: no GL context to describe (and the visionOS core links no SDL) */
+#if defined(ENG_GL_METAL) || defined(ENG_GL_GLES)
+    /* glmetal / glgles: no SDL GL context to describe (the visionOS core and the Quest core link no SDL) */
 #elif defined(ENG_GL_ES_BACKEND)
     /* iOS: an OpenGL ES 2 context, with gl4es providing the 2.1 API on top of it (eng_gl.h) */
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
@@ -719,24 +719,28 @@ void eng_gl_context_attributes(void)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
 #endif
-#ifndef ENG_GL_METAL
+#if !defined(ENG_GL_METAL) && !defined(ENG_GL_GLES)
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 #endif
 }
 
-#ifndef ENG_GL_METAL
+#if !defined(ENG_GL_METAL) && !defined(ENG_GL_GLES)
 static SDL_Window   *hl_win;
 static SDL_GLContext hl_ctx;
 #endif
 
 bool eng_gl_open_headless(int w, int h)
 {
-#ifdef ENG_GL_METAL
+#if defined(ENG_GL_METAL)
     /* glmetal: the frame is an offscreen Metal texture, no window or GL context at all */
     if (!glmetal_create(w, h)) { fprintf(stderr, "[GL] no Metal device\n"); return false; }
     fprintf(stderr, "[GL] headless: %s\n", (const char *)glGetString(GL_RENDERER));
     return true;
+#elif defined(ENG_GL_GLES)
+    /* glgles (Quest, Phase 0): the renderer is stubbed; the host never draws, so there is no offscreen context yet */
+    (void)w; (void)h;
+    return false;
 #else
 #if !defined(_WIN32) && !defined(__APPLE__)             /* Windows/macOS: SDL's offscreen driver makes OpenGL only through EGL, which they lack -- the hidden window below does */
     SDL_SetHint("SDL_VIDEODRIVER", "offscreen");

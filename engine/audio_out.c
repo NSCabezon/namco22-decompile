@@ -11,10 +11,19 @@
 #include <time.h>
 #include <TargetConditionals.h>
 #include <AudioToolbox/AudioToolbox.h>
+#elif defined(ENG_AUDIO_EXTERNAL)
+/* Android / Meta Quest core: the app plays the sound (eng_audio_pull); no output device of our own, no SDL, no CoreAudio. */
+#include <time.h>
 #else
 #include <SDL2/SDL.h>
 #endif
 #include "audio_out.h"
+
+/* The host-pull output (external mode) and the CoreAudio output unit share this block; a pure external build (Android) has
+ * no unit at all and always pulls. */
+#if defined(ENG_AUDIO_COREAUDIO) || defined(ENG_AUDIO_EXTERNAL)
+#define ENG_AUDIO_HAS_EXTERNAL 1
+#endif
 
 #define OUT_HZ ENG_AUDIO_RATE
 #define RING 16384                            /* stereo frames, power of two */
@@ -29,8 +38,10 @@ static int target_max = OUT_HZ * 140 / 1000;
 #define TARGET atomic_load_explicit(&g_target, memory_order_relaxed)
 static int16_t ring[RING * 2];
 static atomic_uint r_head, r_tail;
+#ifdef ENG_AUDIO_HAS_EXTERNAL
 #ifdef ENG_AUDIO_COREAUDIO
 static AudioComponentInstance au;
+#endif
 static int dev;                               /* 1 while the output unit is open (or, external, while the pull is live) */
 static atomic_bool ext_mode;                  /* eng_audio_set_external: the host pulls (eng_audio_pull); no output unit */
 static atomic_bool ext_live;                  /* external and open: eng_audio_pull plays the ring (else silence) */
@@ -111,6 +122,7 @@ static void audio_fill(int16_t *o, int n)
     }
 }
 
+#ifdef ENG_AUDIO_HAS_EXTERNAL
 #ifdef ENG_AUDIO_COREAUDIO
 static OSStatus au_render(void *ref, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *io)
 {
@@ -121,6 +133,7 @@ static OSStatus au_render(void *ref, AudioUnitRenderActionFlags *flags, const Au
     }
     return noErr;
 }
+#endif
 
 void eng_audio_set_external(bool on) { atomic_store(&ext_mode, on); }
 
@@ -145,6 +158,9 @@ bool eng_audio_pull(float *left, float *right, int n)
 bool eng_audio_open(void)
 {
     if (dev) return true;
+#if defined(ENG_AUDIO_EXTERNAL) && !defined(ENG_AUDIO_COREAUDIO)
+    atomic_store(&ext_mode, true);                         /* no output device of our own on this platform: always pull */
+#endif
     if (atomic_load(&ext_mode)) {                          /* the host plays it: no output unit of ours */
         if (getenv("ENG_AUDIO_MAXMS")) { int ms = atoi(getenv("ENG_AUDIO_MAXMS")); if (ms < 60) ms = 60; if (ms > 300) ms = 300; target_max = OUT_HZ * ms / 1000; }
         if (getenv("ENG_OUTPUT_GAIN")) { g_out_gain = atof(getenv("ENG_OUTPUT_GAIN")); if (g_out_gain < 0) g_out_gain = 0; }
@@ -153,6 +169,9 @@ bool eng_audio_open(void)
         fprintf(stderr, "[AUDIO] output %d Hz stereo (external: pulled by the host), gain x%.2f\n", OUT_HZ, g_out_gain);
         return true;
     }
+#ifndef ENG_AUDIO_COREAUDIO
+    return false;                                          /* external-only build: unreachable (ext_mode forced above) */
+#else
     AudioComponentDescription d = { kAudioUnitType_Output,
 #if TARGET_OS_OSX
                                     kAudioUnitSubType_DefaultOutput,
@@ -181,6 +200,7 @@ bool eng_audio_open(void)
     dev = 1;
     fprintf(stderr, "[AUDIO] output %d Hz stereo (CoreAudio, device %.0f Hz), gain x%.2f\n", OUT_HZ, hw, g_out_gain);
     return true;
+#endif /* ENG_AUDIO_COREAUDIO */
 }
 #else
 static void audio_cb(void *u, Uint8 *stream, int len)
@@ -262,11 +282,13 @@ void eng_audio_push(const int16_t *in4, int n)
 
 void eng_audio_close(void)
 {
-#ifdef ENG_AUDIO_COREAUDIO
+#ifdef ENG_AUDIO_HAS_EXTERNAL
     if (dev && atomic_load(&ext_mode)) { atomic_store(&ext_live, false); dev = 0;
                                          if (underruns) fprintf(stderr, "[AUDIO] %u output underrun samples\n", underruns); return; }
+#ifdef ENG_AUDIO_COREAUDIO
     if (dev) { AudioOutputUnitStop(au); AudioUnitUninitialize(au); AudioComponentInstanceDispose(au); au = NULL; dev = 0;
                if (underruns) fprintf(stderr, "[AUDIO] %u output underrun samples\n", underruns); }
+#endif
 #else
     if (dev) { SDL_CloseAudioDevice(dev); dev = 0; if (underruns) fprintf(stderr, "[AUDIO] %u output underrun samples\n", underruns); }
 #endif

@@ -10,7 +10,13 @@
 #ifndef TC_RESET_H
 #define TC_RESET_H
 #ifndef TC_RESET_IMPL
+#if defined(__MACH__)
 #pragma clang section bss="__DATA,__tcg_bss,zerofill" data="__DATA,__tcg_data"
+#else
+/* ELF (Android / Meta Quest): a named section whose name is a valid C identifier, so the linker (lld / GNU ld) provides the
+ * boundary symbols __start___tcg_data / __stop___tcg_data (and the bss pair) automatically; tc_reset.c reads them. */
+#pragma clang section bss="__tcg_bss" data="__tcg_data"
+#endif
 #endif
 #ifndef __OBJC__
 #include <stddef.h>

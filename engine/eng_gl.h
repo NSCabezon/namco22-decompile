@@ -15,6 +15,13 @@
  * answers NULL for shaders and FBOs: render_target.c stays off, and post_gl.c takes glmetal_post_lut. */
 #include "glmetal/gl.h"
 #define SDL_GL_GetProcAddress glmetal_GetProcAddress
+#elif defined(ENG_GL_GLES)
+/* glgles (engine/glgles): the Android / Meta Quest build. PHASE 1 -- the real OpenGL ES 3.0 renderer (glgles/gl.h +
+ * glgles.c), a port of glmetal: the GL subset the engine uses on GLES. Runtime lookups go to glgles_GetProcAddress, which
+ * answers NULL for shaders and framebuffer objects (as glmetal_GetProcAddress), so render_target.c stays off and post_gl.c
+ * takes glgles_post_lut. */
+#include "glgles/gl.h"
+#define SDL_GL_GetProcAddress glgles_GetProcAddress
 #elif defined(__APPLE__) && TARGET_OS_IPHONE
 /* iOS / iPadOS (and Vision Pro's iPad mode): no desktop OpenGL. gl4es implements it over OpenGL ES 2; its
  * <GL/gl.h> is on the include path. Every GL entry point the engine looks up at run time must come from
