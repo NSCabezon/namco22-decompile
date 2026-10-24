@@ -574,6 +574,17 @@ void geo_hw_set_stereo(float sep, float zc, float max_crossed)
 }
 int geo_hw_stereo_on(void) { return g_st.on; }
 
+/* STEREO: the scalars a backend needs to compute the eye=+1 per-vertex shift itself, matching geo_hw_quad_eye. For a vertex
+ * of inverse view depth w = 1/Z (clamped so w <= *inv_max), that shift is 0.5 * (*sep) * K * ((*inv_c) - w) in 1/16 px, with
+ * K = zoom_mant*16 / 2^zoom_shift and the crossed-disparity cap *inv_max = *inv_c + *max16 / (|K|*(*sep)). The GLES backend
+ * (quad_gl + the glgles vertex shader) uses this to shift on the GPU instead of rewriting screen x per eye on the CPU. */
+void geo_hw_stereo_scalars(double *sep, double *inv_c, double *max16)
+{
+    if (sep)    *sep    = g_st.sep;
+    if (inv_c)  *inv_c  = g_st.zc > 0.0 ? 1.0 / g_st.zc : 0.0;
+    if (max16)  *max16  = g_st.max16;
+}
+
 void geo_hw_quad_eye(geo_quad *q, int eye)
 {
     if (!g_st.on) eye = 0;

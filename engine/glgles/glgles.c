@@ -149,7 +149,9 @@ static bool load_gl(void)
 }
 
 /* ------------------------------------------------------------------------------------------------ CPU-side structs */
-typedef struct { float pos[4]; float col[4]; float tc[4]; } Vtx;
+/* bias: STEREO off-axis horizontal shift for the +1 (right) eye, in pre-mvp screen pixels, 0 for the 2D layers and in mono.
+ * The vertex shader adds u_eye * bias to pos.x before u_mvp (u_eye = -1 left, +1 right, 0 mono). See glgles_stereo_begin. */
+typedef struct { float pos[4]; float col[4]; float tc[4]; float bias; } Vtx;
 
 typedef struct {
     GLenum mode, comb_rgb, comb_a;
@@ -210,8 +212,16 @@ static int base_w, base_h;
 static target tgt[GLGLES_MAX_TARGETS];
 static int cur_set;                   /* the active target index */
 
+/* STEREO: when st_mode, every flush / clear / gamma pass runs TWICE from the one emitted vertex stream -- target st_L with
+ * u_eye = -1 and target st_R with u_eye = +1 -- so the per-vertex Vtx.bias becomes the off-axis parallax on the GPU. The CPU
+ * geometry (quad walk, bake, clip, batch) is emitted ONCE. See glgles_stereo_begin / glgles_stereo_end. */
+static int st_mode, st_L, st_R;
+/* STEREO: the per-vertex bias source for the client-array draw path (quad_gl's bb_b). NULL = no bias (0), as in mono and for
+ * the immediate-mode 2D layers. Set by glgles_set_bias_array. */
+static const float *bias_arr;
+
 static GLuint prog;                   /* the uber-program */
-static struct { GLint mvp, tm, yflip, cfg, srcrgb, oprgb, srca, opa, env, scale, afunc, aref, tex0, tex1; } U;
+static struct { GLint mvp, tm, yflip, eye, cfg, srcrgb, oprgb, srca, opa, env, scale, afunc, aref, tex0, tex1; } U;
 static GLuint prog_post;              /* framebuffer-fetch gamma */
 static GLuint prog_post_copy;         /* copy-and-redraw gamma (no fetch) */
 static struct { GLint lut; } UP;
@@ -369,13 +379,17 @@ static const char *VS_SRC =
 "layout(location=0) in vec4 a_pos;\n"
 "layout(location=1) in vec4 a_col;\n"
 "layout(location=2) in vec4 a_tc;\n"
+"layout(location=3) in float a_bias;\n"
 "uniform mat4 u_mvp;\n"
 "uniform mat4 u_tm;\n"
 "uniform float u_yflip;\n"
+"uniform float u_eye;\n"               /* STEREO: -1 left, +1 right, 0 mono (bias has no effect) */
 "out vec4 v_col;\n"
 "out vec4 v_tc;\n"
 "void main(){\n"
-"    vec4 p = u_mvp * a_pos;\n"
+"    vec4 pp = a_pos;\n"
+"    pp.x += u_eye * a_bias;\n"        /* off-axis eye shift, in the same pre-mvp screen space as pos.x */
+"    vec4 p = u_mvp * pp;\n"
 "    p.y *= u_yflip;\n"                 /* +1 here: native bottom-up targets */
 "    gl_Position = p;\n"
 "    gl_PointSize = 1.0;\n"
@@ -508,7 +522,7 @@ static GLuint link_prog(const char *vs, const char *fs, bool bind_attrs)
     if (!v || !f) { if (v) R_DeleteShader(v); if (f) R_DeleteShader(f); return 0; }
     GLuint p = R_CreateProgram();
     R_AttachShader(p, v); R_AttachShader(p, f);
-    if (bind_attrs) { R_BindAttribLocation(p, 0, "a_pos"); R_BindAttribLocation(p, 1, "a_col"); R_BindAttribLocation(p, 2, "a_tc"); }
+    if (bind_attrs) { R_BindAttribLocation(p, 0, "a_pos"); R_BindAttribLocation(p, 1, "a_col"); R_BindAttribLocation(p, 2, "a_tc"); R_BindAttribLocation(p, 3, "a_bias"); }
     R_LinkProgram(p);
     R_DeleteShader(v); R_DeleteShader(f);
     GLint ok = 0; R_GetProgramiv(p, RGL_LINK_STATUS, &ok);
@@ -555,12 +569,13 @@ static bool make_target(target *t, int w, int h)
     t->cur = 0; t->w = w; t->h = h; t->made = true;
     return true;
 }
-static void bind_target(void)
+static void bind_target_idx(int i)
 {
-    target *t = &tgt[cur_set];
+    target *t = &tgt[i];
     R_BindFramebuffer(RGL_FRAMEBUFFER, t->fbo);
     R_FramebufferTexture2D(RGL_FRAMEBUFFER, RGL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t->color[t->cur], 0);
 }
+static void bind_target(void) { bind_target_idx(cur_set); }
 
 /* ------------------------------------------------------------------------------------------------ draw state */
 static void clamp_scissor(int *s, int W, int H)
@@ -637,7 +652,8 @@ static const GLenum prim_gl[3] = { GL_TRIANGLES, GL_LINES, GL_POINTS };
 static void flush_pending(void)
 {
     if (!pend_on || pend_n == 0) { pend_on = false; return; }
-    bind_target();
+    /* All of the per-draw GL state (program, viewport, scissor, uniforms, textures) is eye-independent: apply it once, upload
+     * the vertices once. In stereo only the target FBO and u_eye repeat -- the parallax lives in each vertex's bias. */
     apply_gl_state(&pend);
     const size_t bytes = (size_t)pend_n * sizeof(Vtx);
     vbo_i = (vbo_i + 1) % VBO_RING;
@@ -648,7 +664,14 @@ static void flush_pending(void)
     R_VertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, sizeof(Vtx), (const void *)0);
     R_VertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(Vtx), (const void *)16);
     R_VertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(Vtx), (const void *)32);
-    R_DrawArrays(prim_gl[pend.prim], 0, pend_n);
+    R_VertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Vtx), (const void *)48);
+    if (st_mode) {
+        R_Uniform1f(U.eye, -1.0f); bind_target_idx(st_L); R_DrawArrays(prim_gl[pend.prim], 0, pend_n);
+        R_Uniform1f(U.eye,  1.0f); bind_target_idx(st_R); R_DrawArrays(prim_gl[pend.prim], 0, pend_n);
+    } else {
+        bind_target();
+        R_DrawArrays(prim_gl[pend.prim], 0, pend_n);
+    }
     pend_on = false; pend_n = 0;
 }
 
@@ -719,6 +742,7 @@ static void imm_push(float x, float y, float z)
     v->pos[0] = x; v->pos[1] = y; v->pos[2] = z; v->pos[3] = 1.0f;
     memcpy(v->col, S.color, sizeof v->col);
     memcpy(v->tc, S.tc, sizeof v->tc);
+    v->bias = 0.0f;                         /* immediate mode = the 2D layers: zero parallax */
 }
 void glBegin(GLenum mode) { in_begin = true; imm_mode = mode; imm_n = 0; }
 void glEnd(void) { if (!in_begin) { gl_err = GL_INVALID_OPERATION; return; } in_begin = false; draw_prims(imm_mode, imm, imm_n); imm_n = 0; }
@@ -776,6 +800,7 @@ static void gather(Vtx *v, int idx)
     if (ca_v.on && ca_v.ptr) fetch(&ca_v, idx, v->pos, false);
     if (ca_c.on && ca_c.ptr) { v->col[3] = 1.0f; fetch(&ca_c, idx, v->col, true); } else memcpy(v->col, S.color, sizeof v->col);
     if (ca_t.on && ca_t.ptr) { v->tc[0]=v->tc[1]=v->tc[2]=0.0f; v->tc[3]=1.0f; fetch(&ca_t, idx, v->tc, false); } else memcpy(v->tc, S.tc, sizeof v->tc);
+    v->bias = bias_arr ? bias_arr[idx] : 0.0f;   /* STEREO: quad_gl's per-vertex off-axis shift (0 when none) */
 }
 static Vtx *gat_buf(int n) { if (n > gat_cap) { int c = gat_cap ? gat_cap : 4096; while (c < n) c *= 2; gat = realloc(gat, sizeof(Vtx) * (size_t)c); gat_cap = c; } return gat; }
 void glDrawArrays(GLenum mode, GLint first, GLsizei count)
@@ -874,7 +899,6 @@ void glClear(GLbitfield mask)
 {
     if (!created) return;
     flush_pending();
-    bind_target();
     const int W = tgt[cur_set].w, H = tgt[cur_set].h;
     if (S.scissor_test) { int sc[4] = { S.sc[0], S.sc[1], S.sc[2], S.sc[3] }; clamp_scissor(sc, W, H); R_Enable(GL_SCISSOR_TEST); R_Scissor(sc[0], sc[1], sc[2], sc[3]); }
     else R_Disable(GL_SCISSOR_TEST);
@@ -885,7 +909,10 @@ void glClear(GLbitfield mask)
         gm |= GL_COLOR_BUFFER_BIT;
     }
     if (mask & GL_DEPTH_BUFFER_BIT) { R_DepthMask(S.depth_mask ? GL_TRUE : GL_FALSE); R_ClearDepthf(S.clear_depth); if (S.depth_mask) gm |= GL_DEPTH_BUFFER_BIT; }
-    if (gm) R_Clear(gm);
+    if (gm) {
+        if (st_mode) { bind_target_idx(st_L); R_Clear(gm); bind_target_idx(st_R); R_Clear(gm); }   /* STEREO: clear both eyes */
+        else { bind_target(); R_Clear(gm); }
+    }
     have_applied = false;                 /* scissor / masks / clear state no longer match `applied` */
 }
 
@@ -1143,13 +1170,13 @@ int glgles_create(int w, int h)
 
     prog = link_prog(VS_SRC, FS_SRC, true);
     if (!prog) return 0;
-    U.mvp = R_GetUniformLocation(prog, "u_mvp"); U.tm = R_GetUniformLocation(prog, "u_tm"); U.yflip = R_GetUniformLocation(prog, "u_yflip");
+    U.mvp = R_GetUniformLocation(prog, "u_mvp"); U.tm = R_GetUniformLocation(prog, "u_tm"); U.yflip = R_GetUniformLocation(prog, "u_yflip"); U.eye = R_GetUniformLocation(prog, "u_eye");
     U.cfg = R_GetUniformLocation(prog, "u_cfg"); U.srcrgb = R_GetUniformLocation(prog, "u_srcrgb"); U.oprgb = R_GetUniformLocation(prog, "u_oprgb");
     U.srca = R_GetUniformLocation(prog, "u_srca"); U.opa = R_GetUniformLocation(prog, "u_opa"); U.env = R_GetUniformLocation(prog, "u_env");
     U.scale = R_GetUniformLocation(prog, "u_scale"); U.afunc = R_GetUniformLocation(prog, "u_afunc"); U.aref = R_GetUniformLocation(prog, "u_aref");
     U.tex0 = R_GetUniformLocation(prog, "u_tex0"); U.tex1 = R_GetUniformLocation(prog, "u_tex1");
     R_UseProgram(prog);
-    R_Uniform1i(U.tex0, 0); R_Uniform1i(U.tex1, 1); R_Uniform1f(U.yflip, 1.0f);
+    R_Uniform1i(U.tex0, 0); R_Uniform1i(U.tex1, 1); R_Uniform1f(U.yflip, 1.0f); R_Uniform1f(U.eye, 0.0f);
 
     prog_post = fetch_ok ? link_prog(POST_VS, POST_FS_FETCH, false) : 0;
     if (prog_post) UP.lut = R_GetUniformLocation(prog_post, "u_lut");
@@ -1159,7 +1186,7 @@ int glgles_create(int w, int h)
     if (!prog_post && !prog_post_copy) fprintf(stderr, "[GLGLES] no gamma program (gamma pass will be skipped)\n");
 
     R_GenVertexArrays(1, &vao); R_BindVertexArray(vao);
-    R_EnableVertexAttribArray(0); R_EnableVertexAttribArray(1); R_EnableVertexAttribArray(2);
+    R_EnableVertexAttribArray(0); R_EnableVertexAttribArray(1); R_EnableVertexAttribArray(2); R_EnableVertexAttribArray(3);
     R_GenBuffers(VBO_RING, vbo);
 
     R_GenTextures(1, &lut_tex);
@@ -1217,6 +1244,30 @@ int glgles_width(void) { return created ? tgt[cur_set].w : 0; }
 int glgles_height(void) { return created ? tgt[cur_set].h : 0; }
 int glgles_target_bottom_up(void) { return 1; }
 
+/* STEREO: draw the next frame to BOTH `left` and `right` targets from one emitted stream (see the Vtx.bias note). Each is made
+ * at target 0's size on first use. Until glgles_stereo_end, every flush / clear / gamma pass runs twice, with u_eye -1 then +1. */
+void glgles_stereo_begin(int left, int right)
+{
+    if (!created) return;
+    flush_pending();
+    if (left  < 0 || left  >= GLGLES_MAX_TARGETS) left  = 0;
+    if (right < 0 || right >= GLGLES_MAX_TARGETS) right = 0;
+    glgles_set_target(right);                 /* make `right` (and flush), then settle on `left` as the representative */
+    glgles_set_target(left);
+    st_L = left; st_R = right; st_mode = 1;
+}
+void glgles_stereo_end(void)
+{
+    if (!created) return;
+    flush_pending();
+    st_mode = 0;
+    R_UseProgram(prog); applied_prog = prog;
+    R_Uniform1f(U.eye, 0.0f);                 /* back to mono: bias has no effect */
+    have_applied = false;
+}
+/* STEREO: the per-vertex off-axis shift for the next client-array draws (quad_gl's bb_b), one float a vertex; NULL = none. */
+void glgles_set_bias_array(const float *bias) { bias_arr = bias; }
+
 void *glgles_end_frame(void)
 {
     if (!created) return NULL;
@@ -1239,11 +1290,29 @@ static void ensure_scratch(int w, int h)
     R_TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     scratch_w = w; scratch_h = h;
 }
+static void post_lut_one(int idx, int vw, int vh)
+{
+    if (fetch_ok && prog_post) {
+        bind_target_idx(idx);
+        R_UseProgram(prog_post);
+        R_Uniform1i(UP.lut, 1);
+        R_DrawArrays(GL_TRIANGLES, 0, 3);
+    } else if (prog_post_copy) {
+        /* copy the current colour into scratch, then redraw it through the table */
+        bind_target_idx(idx);
+        ensure_scratch(tgt[idx].w, tgt[idx].h);
+        R_ActiveTexture(GL_TEXTURE0); R_BindTexture(GL_TEXTURE_2D, scratch_tex);
+        R_CopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, vw, vh);
+        R_UseProgram(prog_post_copy);
+        R_Uniform1i(UPC.src, 0); R_Uniform1i(UPC.lut, 1);
+        R_DrawArrays(GL_TRIANGLES, 0, 3);
+    }
+}
 void glgles_post_lut(const uint8_t lut[3][256], int vw, int vh)
 {
     if (!created) return;
     flush_pending();
-    target *t = &tgt[cur_set];
+    target *t = &tgt[st_mode ? st_L : cur_set];       /* both eyes are the same size */
     if (vw > t->w) vw = t->w; if (vh > t->h) vh = t->h;
     if (vw <= 0 || vh <= 0) return;
     uint8_t l4[256][4];
@@ -1256,21 +1325,8 @@ void glgles_post_lut(const uint8_t lut[3][256], int vw, int vh)
     R_Disable(GL_DEPTH_TEST); R_Disable(GL_BLEND); R_Disable(GL_SCISSOR_TEST);
     R_DepthMask(GL_FALSE); R_ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     R_Viewport(0, 0, vw, vh);
-    if (fetch_ok && prog_post) {
-        bind_target();
-        R_UseProgram(prog_post);
-        R_Uniform1i(UP.lut, 1);
-        R_DrawArrays(GL_TRIANGLES, 0, 3);
-    } else if (prog_post_copy) {
-        /* copy the current colour into scratch, then redraw it through the table */
-        bind_target();
-        ensure_scratch(t->w, t->h);
-        R_ActiveTexture(GL_TEXTURE0); R_BindTexture(GL_TEXTURE_2D, scratch_tex);
-        R_CopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, vw, vh);
-        R_UseProgram(prog_post_copy);
-        R_Uniform1i(UPC.src, 0); R_Uniform1i(UPC.lut, 1);
-        R_DrawArrays(GL_TRIANGLES, 0, 3);
-    }
+    if (st_mode) { post_lut_one(st_L, vw, vh); post_lut_one(st_R, vw, vh); }   /* STEREO: gamma each eye */
+    else post_lut_one(cur_set, vw, vh);
     applied_prog = 0; have_applied = false;   /* program/state no longer match the uber-shader's cache */
 }
 
@@ -1301,6 +1357,7 @@ void glgles_destroy(void)
     for (int i = 0; i < VBO_RING; i++) { vbo[i] = 0; vbo_cap[i] = 0; } vbo_i = 0;
     vao = lut_tex = scratch_tex = 0; scratch_w = scratch_h = 0;
     prog = prog_post = prog_post_copy = 0; applied_prog = 0; have_applied = false;
+    st_mode = 0; st_L = st_R = 0; bias_arr = NULL;
     created = false;
     if (s_libgl) { dlclose(s_libgl); s_libgl = NULL; }
 }

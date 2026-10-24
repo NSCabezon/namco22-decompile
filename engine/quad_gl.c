@@ -18,6 +18,9 @@
 #include "geo_hw.h"
 #include "tex_bake.h"
 #include "quad_gl.h"
+#if defined(ENG_GL_GLES)
+#include "glgles/glgles_host.h"   /* STEREO: glgles_set_bias_array -- the per-vertex off-axis shift for the GPU two-eye pass */
+#endif
 
 /* glActiveTexture, resolved at run time (the Windows build does not link
  * opengl32, and GL 1.3 entry points need a lookup there anyway). NULL = no
@@ -335,6 +338,14 @@ static float qa_xy[32 * 2], qa_rgba[32 * 4], qa_st[32 * 4], qa_z[32];
 static float bb_xy[BB_MAXV * 2], bb_rgba[BB_MAXV * 4], bb_st[BB_MAXV * 4];
 static float *bb_xyz;                    /* depth-tested runs (eng_draw_cfg.depth_test): x, y, z -- allocated on first use */
 static int bb_n, bb_valid;
+#if defined(ENG_GL_GLES)
+/* STEREO (Quest): the per-vertex off-axis shift (eye=+1, pre-mvp screen px), parallel to bb_xy. Filled from each clipped
+ * vertex's depth (qa_b) when stereo is on; the glgles vertex shader adds u_eye*bias so one emitted stream draws both eyes.
+ * Zero/unused in mono and on every other backend (compiled out). */
+static float qa_b[32];
+static float bb_b[BB_MAXV];
+static int   bb_stereo;             /* this quad pass supplies bias (geo_hw_stereo_on at eng_draw_resume) */
+#endif
 static struct bbstate { GLuint tex; int env, alpha, blend, prio, tex_on, sc_on, fog; int sc[4]; float frgb[3]; int depth; } bb_run;
 static int depth_applied;                /* GL_DEPTH_TEST as this file last set it (only depth-tested runs ever turn it on) */
 
@@ -437,6 +448,9 @@ static void bb_emit(int n, const struct bbstate *st_)
             }
             memcpy(&bb_rgba[bb_n*4], &qa_rgba[s*4], 4 * sizeof(float));
             memcpy(&bb_st[bb_n*4], &qa_st[s*4], 4 * sizeof(float));
+#if defined(ENG_GL_GLES)
+            bb_b[bb_n] = qa_b[s];
+#endif
             bb_n++;
         }
     if (nobatch) { bb_flush(); bb_valid = 0; }
@@ -480,11 +494,19 @@ void eng_draw_resume(void)
     glVertexPointer(2, GL_FLOAT, 0, bb_xy);
     glColorPointer(4, GL_FLOAT, 0, bb_rgba);
     glTexCoordPointer(4, GL_FLOAT, 0, bb_st);
+#if defined(ENG_GL_GLES)
+    bb_stereo = geo_hw_stereo_on();                               /* STEREO: the 3D quad pass carries per-vertex parallax */
+    glgles_set_bias_array(bb_stereo ? bb_b : (const float *)0);
+#endif
 }
 void eng_draw_end(void)
 {
     bb_flush();
     bb_valid = 0;
+#if defined(ENG_GL_GLES)
+    glgles_set_bias_array((const float *)0);                      /* the 2D layers that follow are zero-parallax */
+    bb_stereo = 0;
+#endif
     glDisableClientState(GL_VERTEX_ARRAY);
     glDisableClientState(GL_COLOR_ARRAY);
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
@@ -521,6 +543,9 @@ static void draw_quad_one(const geo_quad *q, const eng_draw_cfg *cfg)
         for (int i = 0; i < n; i++) {
             qa_rgba[i*4+0] = qa_rgba[i*4+1] = qa_rgba[i*4+2] = qa_rgba[i*4+3] = 1.0f;
             qa_xy[i*2+0] = q->rv[i].sx16 / 16.0f; qa_xy[i*2+1] = q->rv[i].sy16 / 16.0f;
+#if defined(ENG_GL_GLES)
+            qa_b[i] = 0.0f;
+#endif
         }
         bb_emit(n, &(struct bbstate){ .tex_on = 0, .alpha = 0, .blend = 0, .prio = 0, .sc_on = 0 });
         return;
@@ -535,6 +560,9 @@ static void draw_quad_one(const geo_quad *q, const eng_draw_cfg *cfg)
                 memcpy(&qa_rgba[i*4], c, sizeof c);
                 qa_xy[i*2+0] = q->rv[i].sx16 / 16.0f; qa_xy[i*2+1] = q->rv[i].sy16 / 16.0f;
                 qa_z[i] = z;
+#if defined(ENG_GL_GLES)
+                qa_b[i] = 0.0f;
+#endif
             }
             bb_emit(n, &(struct bbstate){ .tex_on = 0, .alpha = 0, .blend = 0, .prio = 0, .sc_on = 0, .depth = cfg->depth_test ? 1 : 0 });
             return;
@@ -708,6 +736,30 @@ static void draw_quad_one(const geo_quad *q, const eng_draw_cfg *cfg)
     int ncv = clip_to_screen(sv, nsv, cv);
     g_perf_clip += eng_now() - _tc;
     if (ncv < 3) return;
+
+#if defined(ENG_GL_GLES)
+    /* STEREO: the eye=+1 off-axis shift of each clipped vertex, from its inverse depth w = 1/Z (cv[i].w, already interpolated
+     * linearly in screen space). This mirrors geo_hw_quad_eye exactly -- shift16 = 0.5*sep*K*(inv_c - min(1/Z, inv_max)),
+     * K = zoom_mant*16/2^shift, inv_max the crossed-disparity cap -- but leaves screen x mono: the glgles shader applies
+     * u_eye*bias per eye on the GPU, so the quad is emitted once. Shared by the textured, solid and fog emits below (same cv).
+     * The cap is the one place this can differ from the CPU path: geo_hw caps 1/Z per rv vertex before the screen clip, this
+     * caps the interpolated 1/Z after it -- identical unless an edge spans a capped (near-plane) and an uncapped vertex. */
+    if (bb_stereo) {
+        double sep, inv_c, max16;
+        geo_hw_stereo_scalars(&sep, &inv_c, &max16);
+        const double K = (double)q->zoom_mant * 16.0 / ldexp(1.0, q->zoom_shift);
+        const double ak = fabs(K) * sep;
+        const double inv_max = ak > 0.0 ? inv_c + max16 / ak : inv_c;
+        const int nb = ncv > 32 ? 32 : ncv;
+        for (int i = 0; i < nb; i++) {
+            double inv = cv[i].w;                     /* 1/Z */
+            if (inv > inv_max) inv = inv_max;
+            qa_b[i] = (float)(0.5 * sep * K * (inv_c - inv) / 16.0);   /* /16: 1/16 px -> px, cv[].x is px */
+        }
+    } else {
+        for (int i = 0; i < 32; i++) qa_b[i] = 0.0f;
+    }
+#endif
 
     /* OVER-BRIGHTENING. The reference is out = clamp(c * bri / 64, 0, 255),
      * so bri > 64 makes a texel BRIGHTER than itself. Plain GL_MODULATE

@@ -132,6 +132,9 @@ void geo_hw_set_stereo(float sep, float zc, float max_crossed);
 int  geo_hw_stereo_on(void);
 /* Move q's drawn screen x (rv, and dv when present) to eye `eye`'s projection; eye 0 restores the mono numbers exactly. */
 void geo_hw_quad_eye(geo_quad *q, int eye);
+/* STEREO (GLES GPU path): the scalars to compute the eye=+1 shift per vertex (0.5*sep*K*(inv_c - min(1/Z, inv_max)), 1/16 px,
+ * K = zoom_mant*16/2^zoom_shift, inv_max = inv_c + max16/(|K|*sep)) without geo_hw_quad_eye's per-eye CPU rewrite. */
+void geo_hw_stereo_scalars(double *sep, double *inv_c, double *max16);
 
 /* PANORAMA (tc-visionos PLAN.md): a view turned by `yaw` radians about the vertical axis through the eye (> 0 = to the right).
  * `dst` becomes `src` projected for that view: its view-space vertices rotated (x' = x cos - z sin, z' = x sin + z cos), then the

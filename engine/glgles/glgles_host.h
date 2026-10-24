@@ -41,6 +41,17 @@ unsigned glgles_target_texture_n(int i);
 unsigned glgles_target_texture(void);                  /* the active target's colour texture name */
 int      glgles_target_bottom_up(void);                /* always 1 here (native GL rows) */
 
+/* STEREO 3D (Quest): render the next frame to BOTH targets `left` and `right` from ONE emitted vertex stream. Between
+ * glgles_stereo_begin and glgles_stereo_end, every flush / clear / gamma pass runs twice -- target `left` with u_eye = -1 and
+ * `right` with u_eye = +1 -- so the per-vertex off-axis shift (glgles_set_bias_array, filled by quad_gl from each vertex's
+ * depth) becomes the parallax on the GPU. The expensive CPU geometry (walk, bake, clip, batch) runs ONCE. The 2D layers
+ * (sprites, text, fade) and mono carry bias 0, i.e. zero parallax. Both targets are made at target 0's size on first use. */
+void glgles_stereo_begin(int left, int right);
+void glgles_stereo_end(void);
+/* STEREO: the per-vertex off-axis shift source for the upcoming client-array draws, one float (pre-mvp screen px) a vertex;
+ * NULL = none (bias 0). quad_gl sets this to its triangle-batch array for the 3D quad pass and clears it otherwise. */
+void glgles_set_bias_array(const float *bias);
+
 /* End the frame: flush the pending draw, glFlush, and return a fresh GLsync (cast to void *) the caller publishes so the
  * app can glWaitSync on it before sampling the target textures. The backend does not wait. */
 void *glgles_end_frame(void);
