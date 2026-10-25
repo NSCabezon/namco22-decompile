@@ -56,6 +56,11 @@ double ss22_view_fov(void);
 int  ss22_quads(void);                       /* quads in the prepared frame */
 int  ss22_sprites(void);                     /* sprites in the prepared frame */
 
+/* PROFILE (ENG_GL_GLES sprite batching): CPU time spent rasterising sprite pixels + packing the atlas since the last call,
+ * with the atlas pages (= sprite GL flushes) and sprites processed. Reads and resets. The host prints it in its stats so we
+ * can see whether draw_sprite_run's cost is CPU rasterisation or GL. Render-thread only. */
+void ss22_gl_spr_prof_take(double *cpu_ms, long *pages, long *sprites);
+
 /* An OpenGL 2.1 compatibility context, the way the engine wants it (alpha channel, double buffered). */
 void eng_gl_context_attributes(void);
 /* An offscreen w x h context for headless runs (SDL's offscreen driver); false if there is no GL at all. */

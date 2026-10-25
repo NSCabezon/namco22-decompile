@@ -338,6 +338,19 @@ static GLuint   spr_atlas;
 static uint8_t *spr_atlas_buf;                      /* CPU side of the atlas: rasterise here, upload each page in ONE call */
 static int      spr_slot_x[1024], spr_slot_y[1024]; /* per-run sprite atlas slot (ni <= 1024) */
 
+/* Sprite-path CPU profile (render thread): time spent rasterising sprite pixels vs pages/sprites processed. The host reads
+ * and resets this each stats window via ss22_gl_spr_prof_take() to show where draw_sprite_run's time really goes. */
+static double g_spr_cpu_ns;      /* accumulated sprite_render_item + atlas pack time (ns) */
+static long   g_spr_pages;       /* atlas pages (= GL flushes from sprites) */
+static long   g_spr_count;       /* sprites rasterised */
+void ss22_gl_spr_prof_take(double *cpu_ms, long *pages, long *sprites)
+{
+    if (cpu_ms)  *cpu_ms  = g_spr_cpu_ns * 1e-6;
+    if (pages)   *pages   = g_spr_pages;
+    if (sprites) *sprites = g_spr_count;
+    g_spr_cpu_ns = 0; g_spr_pages = 0; g_spr_count = 0;
+}
+
 static void tex_alloc_atlas(GLuint *t)
 {
     glGenTextures(1, t);
@@ -359,6 +372,7 @@ static void draw_sprite_run(const sprite_item *run, int n)
     int i = 0;
     while (i < n) {
         int cx = 0, cy = 0, rowh = 0, page_w = 0, page_start = i;
+        struct timespec cpu0, cpu1; clock_gettime(CLOCK_MONOTONIC, &cpu0);  /* profile: CPU rasterise+pack time of this page */
         /* phase 1: pack + rasterise this page's sprites into the CPU atlas buffer (no GL yet) */
         for (; i < n; i++) {
             const sprite_item *it = &run[i];
@@ -368,6 +382,7 @@ static void draw_sprite_run(const sprite_item *run, int n)
             if (cx + it->w > SPR_ATLAS_DIM) { cx = 0; cy += rowh; rowh = 0; }   /* next shelf */
             if (cy + it->h > SPR_ATLAS_DIM) break;                              /* atlas full: start a new page */
             sprite_render_item(&sst, &g_fog, it, spr_buf, 1);
+            g_spr_count++;
             if (it->prioverchar) {            /* the text layer shows nothing under this sprite's pixels (unchanged) */
                 for (int y = 0; y < it->h; y++)
                     for (int x = 0; x < it->w; x++)
@@ -379,7 +394,10 @@ static void draw_sprite_run(const sprite_item *run, int n)
             spr_slot_x[i] = cx; spr_slot_y[i] = cy;
             cx += it->w; if (cx > page_w) page_w = cx; if (it->h > rowh) rowh = it->h;
         }
+        clock_gettime(CLOCK_MONOTONIC, &cpu1);
+        g_spr_cpu_ns += (cpu1.tv_sec - cpu0.tv_sec) * 1e9 + (cpu1.tv_nsec - cpu0.tv_nsec);
         if (i == page_start) { i++; continue; }   /* a single oversized sprite was handled individually above */
+        g_spr_pages++;
         /* upload this page's used region in ONE call (dense shelf packing -> the bbox is almost all real pixels; the few gaps
          * are never sampled), then draw every quad -- one bound atlas + one blend state -> glgles batches into a SINGLE draw.
          * A later page's upload first flushes these quads (glgles flushes pending before overwriting the texture), so reusing

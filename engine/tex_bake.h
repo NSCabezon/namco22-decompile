@@ -26,6 +26,9 @@ void tex_bake_set_flush_hook(void (*f)(GLuint page_tex));
 int  tex_bake_atlas_active(void);
 GLuint tex_bake_white_tex(void);        /* an atlas page whose texel (0,0) is permanently white (solid quads sample it) */
 void tex_bake_commit(GLuint tex);   /* upload tex's atlas page if bakes dirtied it since its last use */
+/* ATLAS ARRAY (Quest): the array layer (= atlas page index) of the LAST bake_quad_texture call -- quad_gl writes it into each
+ * emitted vertex's r texcoord so the glgles uber-shader samples the right layer. 0 unless the texture-array atlas is active. */
+int tex_bake_last_layer(void);
 
 extern int    g_tex_opaque;       /* 1 = no pen-0 keying (hardware polygon path) */
 extern int    g_tex_bake_cap_req; /* the quad's on-screen extent, window pixels */

@@ -50,6 +50,7 @@
 #define RGL_TEXTURE_2D_ARRAY       0x8C1A   /* MULTIVIEW: the 2-layer colour target both eyes render to in one pass */
 #define RGL_READ_FRAMEBUFFER       0x8CA8
 #define RGL_DRAW_FRAMEBUFFER       0x8CA9
+#define RGL_MAX_ARRAY_TEXTURE_LAYERS 0x88FF   /* ATLAS ARRAY (Quest): GL_MAX_ARRAY_TEXTURE_LAYERS, caps the baked-page layer count */
 
 typedef void *GLsync_;
 typedef unsigned long long GLuint64_;
@@ -64,6 +65,7 @@ typedef unsigned long long GLuint64_;
     X(void,  FramebufferTextureLayer, (GLenum, GLenum, GLuint, GLint, GLint)) \
     X(void,  BlitFramebuffer,   (GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum)) \
     X(void,  TexSubImage2D,     (GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *)) \
+    X(void,  TexSubImage3D,     (GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLenum, const void *)) \
     X(void,  TexParameteri,     (GLenum, GLenum, GLint)) \
     X(void,  ActiveTexture,     (GLenum)) \
     X(void,  PixelStorei,       (GLenum, GLint)) \
@@ -189,6 +191,7 @@ typedef struct {
     GLuint tex;                 /* the real GL texture name (0 = no storage yet) */
     int w, h;
     bool rgb_only;              /* internal format without alpha: alpha reads 1 */
+    bool is_array;              /* ATLAS ARRAY (Quest): this name is the 2D-array atlas, sampled via u_tex0arr (unit 2), not GL_TEXTURE_2D */
     GLenum minf, magf, ws, wt;
 } gtex;
 
@@ -207,6 +210,7 @@ typedef struct {
     int cfg[2][4], srcrgb[2][4], oprgb[2][4], srca[2][4], opa[2][4];
     float env[2][4], scale[2][4];
     GLuint tex[2];
+    int tex0_array;                  /* ATLAS ARRAY (Quest): unit-0 texture is the 2D-array atlas -> sample u_tex0arr, layer = per-vertex r texcoord */
     int alpha_func; float alpha_ref;
 } drawstate;
 
@@ -232,8 +236,13 @@ static int st_mode, st_L, st_R;
  * the immediate-mode 2D layers. Set by glgles_set_bias_array. */
 static const float *bias_arr;
 static unsigned g_flush_n;            /* batch flushes (= draw-call runs) since glgles_take_flushes(); a heavy-combat diagnostic */
+/* DIAGNOSTIC: attribute each batch flush to the field that broke it (render thread only; plain statics, no lock).
+ * FL_FORCED = a flush not from submit_state (clear / tex upload / set_target / stereo / post / readback). */
+enum { FL_TEX, FL_BLEND, FL_ENV, FL_SCISSOR, FL_OTHER, FL_FORCED, FL_N };
+static unsigned g_flush_src[FL_N];
+static int s_flush_reason = FL_FORCED;
 
-typedef struct { GLint mvp, tm, yflip, eye, cfg, srcrgb, oprgb, srca, opa, env, scale, afunc, aref, tex0, tex1; } gl_uni;
+typedef struct { GLint mvp, tm, yflip, eye, cfg, srcrgb, oprgb, srca, opa, env, scale, afunc, aref, tex0, tex1, tex0arr, tex0_arr; } gl_uni;
 static GLuint prog_mono;              /* the uber-program, u_eye uniform (mono + the 2-FBO stereo fallback) */
 static GLuint prog_mv;               /* MULTIVIEW variant: num_views=2, eye from gl_ViewID_OVR (0 if unavailable) */
 static GLuint prog;                   /* the active program (= prog_mono or prog_mv) */
@@ -257,6 +266,11 @@ static GLuint vao;
  * Orphaning (BufferData NULL) per flush keeps the no-stall streaming of the old 4-deep ring while dropping the per-flush setup. */
 static GLuint vbo; static size_t vbo_cap;
 static GLuint lut_tex, scratch_tex; static int scratch_w, scratch_h;
+/* ATLAS ARRAY (Quest): ONE GL_TEXTURE_2D_ARRAY holding every baked polygon-texture page as a layer. tex_bake packs into it
+ * (glgles_atlas_create / glgles_atlas_upload) and binds its name on the quad pass; the uber-shader samples it via u_tex0arr
+ * (permanently on unit 2) with the per-vertex layer in the r texcoord, so a page change no longer rebinds unit 0 and the whole
+ * SS22 quad pass batches as one draw. 0 = not created (per-page 2D textures, as every other backend). */
+static GLuint atlas_arr_tex; static int atlas_arr_dim, atlas_arr_layers;
 
 static srvstate S;
 static float mv[32][16], pj[32][16], tmx[2][8][16];
@@ -458,6 +472,8 @@ static const char *FS_SRC =
 "in vec4 v_tc;\n"
 "uniform sampler2D u_tex0;\n"
 "uniform sampler2D u_tex1;\n"
+"uniform highp sampler2DArray u_tex0arr;\n"  /* ATLAS ARRAY (Quest): baked-page array on unit 2; read instead of u_tex0 when u_tex0_arr != 0 */
+"uniform int u_tex0_arr;\n"                   /* 0 = sample u_tex0 (2D, every other draw); 1 = sample u_tex0arr with the per-vertex layer in v_tc.z */
 "uniform ivec4 u_cfg[2];\n"             /* x enabled, y mode, z comb_rgb, w comb_a */
 "uniform ivec4 u_srcrgb[2];\n"
 "uniform ivec4 u_oprgb[2];\n"
@@ -486,7 +502,9 @@ static const char *FS_SRC =
 "    vec4 prim = v_col;\n"
 "    vec4 prev = prim;\n"
 "    vec4 t0 = vec4(1.0), t1 = vec4(1.0);\n"
-"    if (u_cfg[0].x != 0) t0 = texture(u_tex0, v_tc.xy / v_tc.w);\n"
+"    if (u_cfg[0].x != 0) t0 = (u_tex0_arr != 0)\n"                               /* ATLAS ARRAY: layer = v_tc.z (NOT divided by w -- it is constant per primitive) */
+"        ? texture(u_tex0arr, vec3(v_tc.xy / v_tc.w, floor(v_tc.z + 0.5)))\n"
+"        : texture(u_tex0, v_tc.xy / v_tc.w);\n"
 "    if (u_cfg[1].x != 0) t1 = texture(u_tex1, vec2(0.0));\n"
 "    for (int i = 0; i < 2; i++) {\n"
 "        ivec4 cfg = (i==0)?u_cfg[0]:u_cfg[1];\n"
@@ -652,6 +670,7 @@ static void build_unit(drawstate *st, int i)
     if (!S.tex2d[i] || !tex_complete(t)) { st->tex[i] = 0; return; }
     const texenv *e = &S.env[i];
     st->tex[i] = t->tex;
+    if (i == 0) st->tex0_array = t->is_array ? 1 : 0;   /* ATLAS ARRAY: unit 0 is the baked-page array -> FS samples u_tex0arr */
     st->cfg[i][0] = 1; st->cfg[i][1] = (int)e->mode; st->cfg[i][2] = st->cfg[i][3] = 0;
     if (e->mode == GL_COMBINE) {
         st->cfg[i][2] = (int)e->comb_rgb; st->cfg[i][3] = (int)e->comb_a;
@@ -703,17 +722,35 @@ static void apply_gl_state(const drawstate *st)
     if (all || memcmp(st->scale, applied.scale, sizeof st->scale)) R_Uniform4fv(U.scale, 2, &st->scale[0][0]);
     if (all || st->alpha_func != applied.alpha_func) R_Uniform1i(U.afunc, st->alpha_func);
     if (all || st->alpha_ref != applied.alpha_ref) R_Uniform1f(U.aref, st->alpha_ref);
-    for (int i = 0; i < 2; i++)
-        if (all || st->tex[i] != applied.tex[i]) { R_ActiveTexture(GL_TEXTURE0 + i); R_BindTexture(GL_TEXTURE_2D, st->tex[i]); }
+    /* unit 0: a normal 2D texture binds to GL_TEXTURE_2D of unit 0. The atlas texture-array (Quest) is a GL_TEXTURE_2D_ARRAY
+     * object living permanently on unit 2 (bound in glgles_atlas_create) and read through u_tex0arr, so an array-mode draw must
+     * NOT bind its name to unit 0's 2D target (that would be an INVALID_OPERATION: a 2D_ARRAY name on a 2D target). */
+    if (!st->tex0_array && (all || applied.tex0_array || st->tex[0] != applied.tex[0])) { R_ActiveTexture(GL_TEXTURE0); R_BindTexture(GL_TEXTURE_2D, st->tex[0]); }
+    if (all || st->tex[1] != applied.tex[1]) { R_ActiveTexture(GL_TEXTURE0 + 1); R_BindTexture(GL_TEXTURE_2D, st->tex[1]); }
+    if (all || st->tex0_array != applied.tex0_array) R_Uniform1i(U.tex0_arr, st->tex0_array);
     applied = *st; have_applied = true;
 }
 
 static const GLenum prim_gl[3] = { GL_TRIANGLES, GL_LINES, GL_POINTS };
 
+/* DIAGNOSTIC: which drawstate field broke the batch (for the flush-source split). Order matches the heavy-combat suspects. */
+static int flush_classify(const drawstate *a, const drawstate *b)
+{
+    if (a->tex[0] != b->tex[0] || a->tex[1] != b->tex[1]) return FL_TEX;
+    if (a->blend != b->blend || a->bsrc != b->bsrc || a->bdst != b->bdst) return FL_BLEND;
+    if (memcmp(a->cfg, b->cfg, sizeof a->cfg) || memcmp(a->srcrgb, b->srcrgb, sizeof a->srcrgb) ||
+        memcmp(a->oprgb, b->oprgb, sizeof a->oprgb) || memcmp(a->srca, b->srca, sizeof a->srca) ||
+        memcmp(a->opa, b->opa, sizeof a->opa) || memcmp(a->env, b->env, sizeof a->env) ||
+        memcmp(a->scale, b->scale, sizeof a->scale)) return FL_ENV;
+    if (a->scissor != b->scissor || memcmp(a->sc, b->sc, sizeof a->sc) || memcmp(a->vp, b->vp, sizeof a->vp)) return FL_SCISSOR;
+    return FL_OTHER;   /* depth / cmask(prio) / mvp / tm / alpha / prim */
+}
+
 static void flush_pending(void)
 {
     if (!pend_on || pend_n == 0) { pend_on = false; return; }
     g_flush_n++;
+    g_flush_src[s_flush_reason]++; s_flush_reason = FL_FORCED;
     /* Per-draw GL state (viewport, scissor, uniforms, textures) is eye-independent: apply it once, upload the vertices once.
      * MULTIVIEW: one DrawArrays writes both eye layers (mv_fbo stays bound for the whole frame) -- no per-flush FBO switch.
      * Fallback: the two-FBO path, one bind + draw per eye with u_eye. */
@@ -744,6 +781,7 @@ static void submit_state(const drawstate *st, const Vtx *v, int n)
         if (pend_n + n > pend_cap) { int c = pend_cap ? pend_cap : 4096; while (c < pend_n + n) c *= 2; pend_v = realloc(pend_v, sizeof(Vtx) * (size_t)c); pend_cap = c; }
         memcpy(pend_v + pend_n, v, (size_t)n * sizeof(Vtx)); pend_n += n; return;
     }
+    if (pend_on) s_flush_reason = flush_classify(st, &pend);   /* only a real batch break sets a reason; else stays FL_FORCED */
     flush_pending();
     if (n > pend_cap) { int c = pend_cap ? pend_cap : 4096; while (c < n) c *= 2; pend_v = realloc(pend_v, sizeof(Vtx) * (size_t)c); pend_cap = c; }
     memcpy(pend_v, v, (size_t)n * sizeof(Vtx));
@@ -1230,6 +1268,7 @@ static void uni_locs(GLuint p, gl_uni *u)
     u->srca = R_GetUniformLocation(p, "u_srca"); u->opa = R_GetUniformLocation(p, "u_opa"); u->env = R_GetUniformLocation(p, "u_env");
     u->scale = R_GetUniformLocation(p, "u_scale"); u->afunc = R_GetUniformLocation(p, "u_afunc"); u->aref = R_GetUniformLocation(p, "u_aref");
     u->tex0 = R_GetUniformLocation(p, "u_tex0"); u->tex1 = R_GetUniformLocation(p, "u_tex1");
+    u->tex0arr = R_GetUniformLocation(p, "u_tex0arr"); u->tex0_arr = R_GetUniformLocation(p, "u_tex0_arr");
 }
 
 /* ------------------------------------------------------------------------------------------------ host API */
@@ -1250,7 +1289,7 @@ int glgles_create(int w, int h)
     if (!prog_mono) return 0;
     uni_locs(prog_mono, &U_mono);
     R_UseProgram(prog_mono);
-    R_Uniform1i(U_mono.tex0, 0); R_Uniform1i(U_mono.tex1, 1); R_Uniform1f(U_mono.yflip, 1.0f); R_Uniform1f(U_mono.eye, 0.0f);
+    R_Uniform1i(U_mono.tex0, 0); R_Uniform1i(U_mono.tex1, 1); R_Uniform1i(U_mono.tex0arr, 2); R_Uniform1f(U_mono.yflip, 1.0f); R_Uniform1f(U_mono.eye, 0.0f);
     prog = prog_mono; U = U_mono;
 
     prog_post = fetch_ok ? link_prog(POST_VS, POST_FS_FETCH, false) : 0;
@@ -1267,7 +1306,7 @@ int glgles_create(int w, int h)
       if (mv_ok) { R_FramebufferTextureMultiviewOVR = (pfn_FramebufferTextureMultiviewOVR)gl_load("glFramebufferTextureMultiviewOVR"); if (!R_FramebufferTextureMultiviewOVR) mv_ok = false; } }
     if (mv_ok) {
         prog_mv = link_prog(VS_SRC_MV, FS_SRC, true);
-        if (prog_mv) { uni_locs(prog_mv, &U_mv); R_UseProgram(prog_mv); R_Uniform1i(U_mv.tex0, 0); R_Uniform1i(U_mv.tex1, 1); R_Uniform1f(U_mv.yflip, 1.0f); }
+        if (prog_mv) { uni_locs(prog_mv, &U_mv); R_UseProgram(prog_mv); R_Uniform1i(U_mv.tex0, 0); R_Uniform1i(U_mv.tex1, 1); R_Uniform1i(U_mv.tex0arr, 2); R_Uniform1f(U_mv.yflip, 1.0f); }
         else mv_ok = false;
     }
     if (mv_ok) {
@@ -1420,9 +1459,68 @@ void glgles_stereo_end(void)
 /* STEREO: the per-vertex off-axis shift for the next client-array draws (quad_gl's bb_b), one float a vertex; NULL = none. */
 void glgles_set_bias_array(const float *bias) { bias_arr = bias; }
 
+/* ATLAS ARRAY (Quest): make the ONE 2D-array texture tex_bake packs baked polygon-texture pages into (one layer per page).
+ * Returns the GL name the engine binds (via glBindTexture) to mark the quad pass as array-sampled; 0 if unavailable (caller
+ * falls back to per-page 2D textures). *out_layers = layers actually allocated (capped by GL_MAX_ARRAY_TEXTURE_LAYERS). The
+ * array is bound once, permanently, to texture unit 2 (u_tex0arr); nothing else uses unit 2. */
+unsigned glgles_atlas_create(int dim, int want_layers, int *out_layers)
+{
+    if (out_layers) *out_layers = 0;
+    if (!created || dim < 1) return 0;
+    if (atlas_arr_tex) { if (out_layers) *out_layers = atlas_arr_layers; return atlas_arr_tex; }   /* one array for the run */
+    GLint maxl = 0; R_GetIntegerv(RGL_MAX_ARRAY_TEXTURE_LAYERS, &maxl);
+    if (maxl <= 0) maxl = 256;                       /* ES3 guarantees >= 256 */
+    if (want_layers > maxl) want_layers = maxl;
+    if (want_layers < 1) want_layers = 1;
+    GLuint t = 0; R_GenTextures(1, &t);
+    if (!t) return 0;
+    while (R_GetError() != GL_NO_ERROR) {}
+    R_ActiveTexture(GL_TEXTURE0 + 2);
+    R_BindTexture(RGL_TEXTURE_2D_ARRAY, t);
+    R_TexImage3D(RGL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, dim, dim, want_layers, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    if (R_GetError() != GL_NO_ERROR) {               /* out of memory for the whole array: drop back to per-page 2D */
+        R_BindTexture(RGL_TEXTURE_2D_ARRAY, 0); R_DeleteTextures(1, &t); R_ActiveTexture(GL_TEXTURE0);
+        fprintf(stderr, "[GLGLES] atlas array %dx%dx%d allocation failed; using per-page 2D textures\n", dim, dim, want_layers);
+        return 0;
+    }
+    R_TexParameteri(RGL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    R_TexParameteri(RGL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    R_TexParameteri(RGL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    R_TexParameteri(RGL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    R_ActiveTexture(GL_TEXTURE0);                    /* leave unit 2 bound to the array for the run; active unit back to 0 */
+    /* register it in the name table so build_unit/apply recognise the binding and set tex0_array */
+    gtex *g = tex_get(t);
+    if (g) { g->tex = t; g->is_array = true; g->minf = GL_NEAREST; g->magf = GL_NEAREST; g->ws = g->wt = GL_CLAMP_TO_EDGE; g->w = g->h = dim; }
+    atlas_arr_tex = t; atlas_arr_dim = dim; atlas_arr_layers = want_layers;
+    have_applied = false;                            /* disturbed the unit bindings */
+    if (out_layers) *out_layers = want_layers;
+    fprintf(stderr, "[GLGLES] atlas array %dx%d x %d layers (GL max %d) on unit 2\n", dim, dim, want_layers, (int)maxl);
+    return t;
+}
+
+/* ATLAS ARRAY: refresh one layer's sub-rect from an RGBA8 CPU buffer whose rows are `src_row_len` pixels wide (tex_bake's
+ * full-page shadow). Flushes any pending batch first (as glTexSubImage2D does) so quads already batched draw with the old
+ * texels before these change -- the same invariant the per-page 2D path relied on. */
+void glgles_atlas_upload(int layer, int x, int y, int w, int h, int src_row_len, const void *rgba)
+{
+    if (!created || !atlas_arr_tex || !rgba || w <= 0 || h <= 0) return;
+    if (layer < 0 || layer >= atlas_arr_layers) return;
+    flush_pending();
+    R_ActiveTexture(GL_TEXTURE0 + 2);
+    R_BindTexture(RGL_TEXTURE_2D_ARRAY, atlas_arr_tex);
+    R_PixelStorei(GL_UNPACK_ROW_LENGTH, src_row_len > 0 ? src_row_len : w);
+    R_PixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    R_TexSubImage3D(RGL_TEXTURE_2D_ARRAY, 0, x, y, layer, w, h, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    R_PixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    R_PixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    R_ActiveTexture(GL_TEXTURE0);
+    have_applied = false;                            /* active unit / pixel store disturbed */
+}
+
 /* diagnostic: batch flushes (draw-call runs) since the last call, then reset. A heavy frame's flush count is how many state
  * breaks it paid; the host adds it to the render stats line. */
 unsigned glgles_take_flushes(void) { unsigned f = g_flush_n; g_flush_n = 0; return f; }
+void glgles_take_flush_src(unsigned out[FL_N]) { for (int i = 0; i < FL_N; i++) { out[i] = g_flush_src[i]; g_flush_src[i] = 0; } }
 
 void *glgles_end_frame(void)
 {
@@ -1508,6 +1606,7 @@ void glgles_destroy(void)
         if (mv_tex) R_DeleteTextures(1, &mv_tex);
         if (mv_fbo) R_DeleteFramebuffers(1, &mv_fbo);
         if (resolve_fbo) R_DeleteFramebuffers(1, &resolve_fbo);
+        if (atlas_arr_tex) R_DeleteTextures(1, &atlas_arr_tex);   /* ATLAS ARRAY (Quest) */
         if (prog_mono) R_DeleteProgram(prog_mono);
         if (prog_mv) R_DeleteProgram(prog_mv);
         if (prog_post) R_DeleteProgram(prog_post);
@@ -1524,6 +1623,7 @@ void glgles_destroy(void)
     vao = lut_tex = scratch_tex = 0; scratch_w = scratch_h = 0;
     prog = prog_mono = prog_mv = prog_post = prog_post_copy = prog_post_mv = 0; applied_prog = 0; have_applied = false;
     mv_ok = false; mv_active = 0; mv_tex = mv_fbo = resolve_fbo = 0; mv_w = mv_h = 0;
+    atlas_arr_tex = 0; atlas_arr_dim = atlas_arr_layers = 0;
     st_mode = 0; st_L = st_R = 0; bias_arr = NULL;
     created = false;
     if (s_libgl) { dlclose(s_libgl); s_libgl = NULL; }

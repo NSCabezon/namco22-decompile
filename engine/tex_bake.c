@@ -28,6 +28,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#if defined(ENG_GL_GLES)
+#include "glgles/glgles_host.h"           /* ATLAS ARRAY (Quest): pack pages into layers of one 2D-array texture */
+#endif
 
 /* ========== Texture Lookup Pipeline ========== */
 
@@ -336,6 +339,35 @@ static int atlas_on(void)
 }
 int tex_bake_atlas_active(void) { return atlas_on(); }
 
+/* ATLAS ARRAY (Quest): one GL_TEXTURE_2D_ARRAY holds every atlas page as a layer. All apages[].tex then share this single GL
+ * name, so a page change in z order no longer rebinds unit 0 and the SS22 quad pass stops breaking the draw batch (~96% of
+ * heavy-combat flushes were these page binds). The CPU packing (shadow, slots, ou/ov) is unchanged, so output is pixel-identical;
+ * only the GL object and the upload call differ. GLES only; ENG_TEX_ARRAY=0 forces the old per-page 2D textures for A/B. */
+static int    g_bake_last_layer;          /* the layer (= page index) of the last bake_quad_texture; read by tex_bake_last_layer */
+int tex_bake_last_layer(void) { return g_bake_last_layer; }
+#if defined(ENG_GL_GLES)
+static GLuint atlas_array_tex;            /* the one 2D-array (0 = per-page 2D textures) */
+static int    atlas_array_v = -1;         /* -1 untried, 0 off, 1 on */
+static int atlas_array_ready(void)
+{
+    if (atlas_array_v >= 0) return atlas_array_v;
+    const char *e = getenv("ENG_TEX_ARRAY");
+    if ((e && *e == '0') || !atlas_on()) { atlas_array_v = 0; return 0; }
+    atlas_size_pick();                                      /* sets atlas_dim and atlas_maxp (the 448 MB page budget) */
+    int got = 0;
+    atlas_array_tex = glgles_atlas_create(atlas_dim, atlas_maxp, &got);
+    if (atlas_array_tex && got >= 1) {
+        if (got < atlas_maxp) atlas_maxp = got;             /* never allocate a page beyond the array's layer count */
+        atlas_array_v = 1;
+    } else {
+        atlas_array_tex = 0; atlas_array_v = 0;             /* HW cannot give the array -> per-page 2D (unchanged) */
+    }
+    return atlas_array_v;
+}
+#else
+static int atlas_array_ready(void) { return 0; }
+#endif
+
 /* Bakes write the page's SHADOW (CPU memory); the GL texture is refreshed in
  * dirty SLOT RECTS, once, when a drawn quad actually needs the page
  * (tex_bake_commit). A scene change's hundreds of bakes become a handful of
@@ -343,6 +375,28 @@ int tex_bake_atlas_active(void) { return atlas_on(); }
  * driver, and 1700 of them were the 30 ms frame at Dirt Dash's race start. */
 void tex_bake_commit(GLuint tex)               /* upload tex's page if bakes dirtied it */
 {
+#if defined(ENG_GL_GLES)
+    if (atlas_array_ready() && tex == atlas_array_tex) {
+        /* every page shares the one array name, so flush EACH dirty page into its own layer (the 2D loop below returns after the
+         * first match, which would miss the rest). Each layer's dirty bands were written to that page's shadow by the bakes. */
+        for (int i = 0; i < ap_n; i++) {
+            apage *p = &apages[i];
+            if (!p->ndr || !p->shadow) continue;
+            if (p->ndr > 0) {
+                for (int r = 0; r < p->ndr; r++) {
+                    const arect *d = &p->dr[r];
+                    glgles_atlas_upload(i, d->x, d->y, d->w, d->h, ATLAS_DIM,
+                                        p->shadow + ((size_t)d->y * ATLAS_DIM + d->x) * 4);
+                }
+            } else {
+                glgles_atlas_upload(i, p->dirty_x0, p->dirty_y0, p->dirty_x1 - p->dirty_x0, p->dirty_y1 - p->dirty_y0, ATLAS_DIM,
+                                    p->shadow + ((size_t)p->dirty_y0 * ATLAS_DIM + p->dirty_x0) * 4);
+            }
+            p->ndr = 0; p->dirty_x0 = p->dirty_y0 = ATLAS_DIM; p->dirty_x1 = p->dirty_y1 = 0;
+        }
+        return;
+    }
+#endif
     for (int i = 0; i < ap_n; i++) {
         apage *p = &apages[i];
         if (p->tex != tex || !p->ndr) continue;
@@ -392,6 +446,12 @@ static void page_dirty(int p, int x, int y, int w, int h)
 static void atlas_page_init(int i)
 {
     atlas_size_pick();
+#if defined(ENG_GL_GLES)
+    if (atlas_array_ready()) {
+        apages[i].tex = atlas_array_tex;    /* every page is a layer of the one array; the layer index is the page index i */
+    } else
+#endif
+    {
     glGenTextures(1, &apages[i].tex);
     glBindTexture(GL_TEXTURE_2D, apages[i].tex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -399,6 +459,7 @@ static void atlas_page_init(int i)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ATLAS_DIM, ATLAS_DIM, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    }
     apages[i].shadow = malloc((size_t)ATLAS_DIM * ATLAS_DIM * 4);
     if (!apages[i].shadow) fprintf(stderr, "[TEX] atlas shadow: out of memory\n");
     apages[i].ndr = 0; apages[i].dirty_x0 = apages[i].dirty_y0 = ATLAS_DIM; apages[i].dirty_x1 = apages[i].dirty_y1 = 0;
@@ -577,7 +638,13 @@ static GLuint gen_texture(void)
 
 void renderer_texture_init(void) {
     if (gen_n) { glDeleteTextures(gen_n, gen_pool); gen_n = 0; }
-    for (int i = 0; i < ap_n; i++) { glDeleteTextures(1, &apages[i].tex); free(apages[i].shadow); apages[i].shadow = NULL; }
+    for (int i = 0; i < ap_n; i++) {
+#if defined(ENG_GL_GLES)
+        if (!atlas_array_ready())   /* array mode: all pages share the one array name (owned by glgles) -- deleting per page would double-free it */
+#endif
+            glDeleteTextures(1, &apages[i].tex);
+        free(apages[i].shadow); apages[i].shadow = NULL;
+    }
     ap_n = 0; ap_reset_hand = 0;
     /* Delete any live textures rather than just dropping the entries --
      * calling this a second time would otherwise orphan every texture the
@@ -601,6 +668,7 @@ void renderer_texture_init(void) {
         /* 8 pages (128 MB + shadows) by default; the rest grow on demand in
          * atlas_alloc. ENG_ATLAS_PREALLOC=<n> raises it (28 = every page). */
         atlas_size_pick();
+        atlas_array_ready();   /* ATLAS ARRAY (Quest): create the array now so atlas_maxp is capped to the HW layer count before `want` is clamped */
         int want = (int)(8ull * 2048 * 2048 / ((unsigned long long)atlas_dim * atlas_dim));   /* 128 MB worth: 8 pages of 2048, 2 of 4096 */
         if (want < 1) want = 1;
         const char *e = getenv("ENG_ATLAS_PREALLOC");
@@ -638,6 +706,7 @@ static GLuint bake_impl(int min_u, int min_v, int range_u, int range_v,
                         int force_cap,      /* > 0: at most this cap (a coarse placeholder) */
                         int peek)           /* 1: only look in the cache -- 0 on a miss, nothing baked, no miss counted */ {
     int slot_page = 0, slot_x = 0, slot_y = 0;   /* atlas: the slot this bake lands in (set before the bake loop) */
+    g_bake_last_layer = 0;                       /* ATLAS ARRAY: default layer (overwritten below on an atlas hit/miss) */
     /* Expand degenerate UV ranges to minimum 16 texels */
     if (range_u < 16) { min_u = (min_u * 2 + range_u) / 2 - 8; range_u = 16; }
     if (range_v < 16) { min_v = (min_v * 2 + range_v) / 2 - 8; range_v = 16; }
@@ -674,6 +743,7 @@ static GLuint bake_impl(int min_u, int min_v, int range_u, int range_v,
             if (out_sv) *out_sv = e->sv;
             if (out_ou) *out_ou = e->ou;
             if (out_ov) *out_ov = e->ov;
+            g_bake_last_layer = atlas_on() ? e->a_page : 0;   /* ATLAS ARRAY: this cached slot's layer */
             return atlas_on() ? apages[e->a_page].tex : e->gl_texture;
         }
     }
@@ -970,6 +1040,7 @@ static GLuint bake_impl(int min_u, int min_v, int range_u, int range_v,
          * catches up at tex_bake_commit, one dirty row band per demand */
         tex_subimages++;
         tex = apages[slot_page].tex;
+        g_bake_last_layer = slot_page;            /* ATLAS ARRAY: the layer this bake landed on */
         /* texel d/step of the bake sits at slot texel d/step: normalized, that
          * is ou + ((u-bmin)+cu)/brange * range/(step*DIM) */
         su = (float)range_u / (float)(step_u * ATLAS_DIM);
@@ -1171,6 +1242,7 @@ GLuint bake_quad_texture(int min_u, int min_v, int range_u, int range_v,
                          int texbank, int pal_group, int cmode,
                          float *out_su, float *out_sv, float *out_ou, float *out_ov) {
     if (!budget_env_done) budget_env();
+    g_bake_last_layer = 0;   /* ATLAS ARRAY: default; each bake_impl below sets it for the slot it returns */
     /* NEVER STEP DOWN A TIER WHILE A SHARPER BAKE IS CACHED (2026-10-07, "the road textures pop off and on"). A wide texture's cap
      * follows its on-screen size (256 / 512 / 1024) and each tier decimates the strip differently -- 1280 texels keep every 5th
      * column at 256, every 2nd at 1024 -- so a road strip whose size wobbles across a threshold re-baked and changed pattern back and

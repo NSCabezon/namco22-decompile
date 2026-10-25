@@ -51,8 +51,19 @@ void glgles_stereo_end(void);
 /* STEREO: the per-vertex off-axis shift source for the upcoming client-array draws, one float (pre-mvp screen px) a vertex;
  * NULL = none (bias 0). quad_gl sets this to its triangle-batch array for the 3D quad pass and clears it otherwise. */
 void glgles_set_bias_array(const float *bias);
+
+/* ATLAS ARRAY (Quest): tex_bake packs the baked polygon-texture pages into layers of ONE 2D-array texture so that a page change
+ * in z order stops breaking the draw batch (it was ~96% of heavy-combat flushes). glgles_atlas_create makes the array and
+ * returns the GL name to bind (0 if unavailable -> caller keeps per-page 2D textures); *out_layers = layers allocated, capped
+ * by GL_MAX_ARRAY_TEXTURE_LAYERS. glgles_atlas_upload refreshes one layer's sub-rect from a full-page-width (src_row_len,
+ * pixels) RGBA8 buffer. The uber-shader samples the array (unit 2, u_tex0arr) when the bound unit-0 texture is this object,
+ * with the per-vertex layer carried in the r texcoord. GLES only; glmetal/SDL never call these. */
+unsigned glgles_atlas_create(int dim, int want_layers, int *out_layers);
+void     glgles_atlas_upload(int layer, int x, int y, int w, int h, int src_row_len, const void *rgba);
 /* Diagnostic: batch flushes (draw-call runs) issued since the last call, then reset to 0. */
 unsigned glgles_take_flushes(void);
+/* DIAGNOSTIC: last interval's flushes split by cause: [0]tex-bind [1]blend [2]texenv/fog [3]scissor/vp [4]other(depth/prio/mvp) [5]forced. Reset on read. */
+void glgles_take_flush_src(unsigned out[6]);
 
 /* End the frame: flush the pending draw, glFlush, and return a fresh GLsync (cast to void *) the caller publishes so the
  * app can glWaitSync on it before sampling the target textures. The backend does not wait. */

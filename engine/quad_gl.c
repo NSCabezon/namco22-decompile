@@ -872,6 +872,13 @@ static void draw_quad_one(const geo_quad *q, const eng_draw_cfg *cfg)
     } else {
     {
         float inv = 1.0f / (float)rgb_scale;
+        float qlayer = 0.0f;
+#if defined(ENG_GL_GLES)
+        /* ATLAS ARRAY (Quest): this quad's bake landed on this array layer (= atlas page); carry it in the r texcoord so the
+         * glgles uber-shader samples the right layer and a page change no longer breaks the batch. 0 with per-page 2D textures
+         * (and on every other backend), where the r channel is unused. */
+        qlayer = (float)tex_bake_last_layer();
+#endif
         int n = ncv > 32 ? 32 : ncv;
         for (int i = 0; i < n; i++) {
             float cr = cv[i].bri * inv, cg = cv[i].bri * inv, cb = cv[i].bri * inv;
@@ -883,7 +890,7 @@ static void draw_quad_one(const geo_quad *q, const eng_draw_cfg *cfg)
              * (matrix follows clipping on the GPU), so batching no longer
              * breaks per slot. bou/bov are 0 with per-quad textures: s+0 == s. */
             qa_st[i*4+0] = cv[i].s + bou * cv[i].w; qa_st[i*4+1] = cv[i].t + bov * cv[i].w;
-            qa_st[i*4+2] = 0.0f;   qa_st[i*4+3] = cv[i].w;
+            qa_st[i*4+2] = qlayer;   qa_st[i*4+3] = cv[i].w;   /* r = atlas-array layer (0 with per-page 2D); q = 1/z */
             qa_xy[i*2+0] = cv[i].x; qa_xy[i*2+1] = cv[i].y;
         }
         bb_emit(n, &(struct bbstate){ .tex = tex, .env = rgb_scale, .alpha = base_alpha, .blend = 0, .prio = 0,
