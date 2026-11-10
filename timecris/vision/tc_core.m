@@ -386,6 +386,7 @@ void ss22_input_rumble(uint16_t low, uint16_t high, uint32_t ms)    /* engine/ss
     shots++;
     emit(TC_EVENT_SHOT, 1);
 }
+bool ss22_input_pad_rumble(void) { return true; }                   /* engine/ss22_out.c's recoil log: the shell always gets TC_EVENT_SHOT */
 
 static unsigned wheel_centre(void) { return ig ? (unsigned)((ig->wheel_min + ig->wheel_max) / 2) : 0x200; }
 

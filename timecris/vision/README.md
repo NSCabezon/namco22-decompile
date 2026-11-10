@@ -211,3 +211,28 @@ python3 tools/tc_hashlog_cmp.py <cold.log from a separate process> /tmp/q/hash.l
   framebuffer-fetch pipeline and falls back to the ping-pong gamma pass.
 - **The log** goes to stderr. Every 300 frames it prints a `[TC_CORE]` line: the rate, the work per frame (the
   emulation plus draw and encode), late frames and shots.
+
+## Merging upstream
+
+`visionos-port` follows `spacestate1/namco22-decompile` `main` (remote `origin`). The fork is the remote `fork`. To update:
+`git fetch origin main:main && git push fork main`, then `git merge origin/main` on `visionos-port`, build the three trees
+(`build`, `build-coremac`, `build-xros`) and run the harness (`tc_core_test extracted <out> 60`: 0 traps, about 60 fps,
+shots reported).
+
+The core builds without SDL. After a merge, two kinds of break are common:
+
+- **A new engine file calls SDL.** The compile fails with `call to undeclared function 'SDL_...'`. If only the SDL host,
+  input or UI (`ss22_host.c`, `ss22_input.c`, `eng_ui.c`) uses that file, add it to the `REMOVE_ITEM` list of `tc_core` in
+  `timecris/CMakeLists.txt`. Otherwise guard the call with `ENG_EXTERNAL_HOST`. Don't add SDL functions to `nosdl/SDL2/SDL.h`.
+- **`ss22_input.h` gains a function.** The link fails with `Undefined symbols ... _ss22_input_...`. `tc_core.m` replaces
+  `ss22_input.c`, so implement the new function there.
+
+Merge of 2026-11-10 (upstream 0.8.0 -> 0.10.3, merge `3987b7c`):
+
+- It brought in the re-lifted Time Crisis 68K (`gen/tc_lifted_*`), with the same ROM, and the sound-translator fixes
+  (`tools/gen/snd_dispatch.py`, `snd_indirect.py`, `snd_exits.py`; GitHub #62 and #95). It also brought the `__int128` backface cull
+  (`geo_hw.c`), the guard-band draw polygon (`ss22_gl.c`), `g_tex_budget_paused` (full bakes in attract and menus), and `eng_crosshair`.
+- Conflicts: `engine/ss22_host.c` (both includes kept) and `engine/tex_bake.c` (our `ENG_TEX_BUDGET_MS` time cap kept beside
+  `g_tex_budget_paused`).
+- Fixes in the core: `twin_stick.c` and `eng_crosshair.c` were left out of `tc_core` (both are SDL code), and `tc_core.m` gained
+  `ss22_input_pad_rumble()`. That function always returns true, because the shell always receives `TC_EVENT_SHOT`.

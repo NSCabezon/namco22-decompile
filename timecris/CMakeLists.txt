@@ -176,7 +176,8 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen/snd.cov AND (TC_VISION OR (APPLE
       vision/tc_reset.c)
   list(REMOVE_ITEM TC_CORE_LIB_SRC src/tc_game.c       # vision/tc_game_core.c: the same file with main() named tc_main
        ${NAMCO22_ENGINE_DIR}/ss22_host.c ${NAMCO22_ENGINE_DIR}/ss22_input.c ${NAMCO22_ENGINE_DIR}/eng_ffb.c ${NAMCO22_ENGINE_DIR}/render_target.c
-       ${NAMCO22_ENGINE_DIR}/eng_display.c ${NAMCO22_ENGINE_DIR}/eng_ui.c ${NAMCO22_ENGINE_DIR}/win_startup.c)
+       ${NAMCO22_ENGINE_DIR}/eng_display.c ${NAMCO22_ENGINE_DIR}/eng_ui.c ${NAMCO22_ENGINE_DIR}/win_startup.c
+       ${NAMCO22_ENGINE_DIR}/twin_stick.c ${NAMCO22_ENGINE_DIR}/eng_crosshair.c)   # SDL pad/stick + crosshair-file code: only the SDL host/input/UI call it
   # tc_core_quit (vision/tc_reset.h): every C source of the game, and glmetal.m, get tc_reset.h first -- their variables in sections
   # of their own, their heap blocks noted -- so a quit can put the game back to how a new process finds it. Not tc_core.m (its state
   # outlives a game) nor tc_reset.c itself (TC_RESET_IMPL).
