@@ -2,6 +2,8 @@
 /* Namco C352 PCM chip -- ported from MAME's c352.cpp. See include/c352.h. */
 #include "c352.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 static uint8_t rom_read_byte(const c352_t *c, uint32_t addr)
 {
@@ -102,6 +104,10 @@ void c352_write(c352_t *c, uint32_t offset, uint16_t data, uint16_t mem_mask)
 
                 v->curr_vol[0] = v->curr_vol[1] = 0;
                 v->curr_vol[2] = v->curr_vol[3] = 0;
+                v->speech = g_c352_speech_bank_hi && (v->wave_bank & 0xFF) >= g_c352_speech_bank_lo && (v->wave_bank & 0xFF) <= g_c352_speech_bank_hi;
+                { static int lg = -1; if (lg < 0) lg = getenv("C352_KEYLOG") != NULL;   /* $C352_KEYLOG: every key-on (TEST ONLY) */
+                  if (lg) { extern uint32_t rr_frame; fprintf(stderr, "[KEYON] f%u v%02d %02X:%04X-%04X loop %04X fl %04X vol %04X %04X freq %04X\n", rr_frame, i,
+                                    v->wave_bank & 0xFF, v->wave_start, v->wave_end, v->wave_loop, v->flags, v->vol_f, v->vol_r, v->freq); } }
             }
             if (v->flags & C352_FLG_KEYOFF) {
                 v->flags &= (uint16_t)~(C352_FLG_BUSY | C352_FLG_KEYOFF);
@@ -170,17 +176,18 @@ static int16_t clamp_s16(int32_t v)
     return (int16_t)v;
 }
 
-int      g_c352_gain_music = 100, g_c352_gain_fx = 100;
-uint32_t g_c352_music_mask = 0x0000FFFFu;
+int      g_c352_gain_music = 100, g_c352_gain_fx = 100, g_c352_gain_voice = 100;
+uint32_t g_c352_music_mask = 0x0000FFFFu, g_c352_speech_mask = 0;
+unsigned g_c352_speech_bank_lo, g_c352_speech_bank_hi;
 
 void c352_generate(c352_t *c, int16_t *out, int n)
 {
     for (int i = 0; i < n; i++) {
-        int32_t outv[4] = {0, 0, 0, 0}, outm[4] = {0, 0, 0, 0};          /* outm: the music voices, mixed apart for their own gain */
+        int32_t outv[4] = {0, 0, 0, 0}, outm[4] = {0, 0, 0, 0}, outs[4] = {0, 0, 0, 0};   /* outm: the music voices, outs: the speech, mixed apart for their own gains */
 
         for (int j = 0; j < 32; j++) {
-            int32_t *dst = (g_c352_music_mask >> j & 1) ? outm : outv;
             c352_voice_t *v = &c->voice[j];
+            int32_t *dst = (v->speech || (g_c352_speech_mask >> j & 1)) ? outs : (g_c352_music_mask >> j & 1) ? outm : outv;
             int16_t s = 0;
 
             if (v->flags & C352_FLG_BUSY) {
@@ -214,6 +221,6 @@ void c352_generate(c352_t *c, int16_t *out, int n)
         }
 
         for (int k = 0; k < 4; k++)
-            out[i * 4 + k] = clamp_s16((outm[k] * g_c352_gain_music + outv[k] * g_c352_gain_fx) / 100 >> 3);
+            out[i * 4 + k] = clamp_s16((outm[k] * g_c352_gain_music + outv[k] * g_c352_gain_fx + outs[k] * g_c352_gain_voice) / 100 >> 3);
     }
 }

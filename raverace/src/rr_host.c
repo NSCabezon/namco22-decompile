@@ -35,6 +35,7 @@
 #include "eng_pad.h"
 #include "eng_pace.h"
 #include "eng_ffb.h"
+#include "twin_stick.h"
 #include "tex_bake.h"
 #include "rr_gl.h"
 #include "render_target.h"
@@ -134,6 +135,7 @@ static void render_size(int *w, int *h)
     if (dw < 1 || dh < 1) { dw = 640; dh = 480; }
     double ar = 4.0 / 3.0;
     if (g_cfg_wide && (double)dw / dh > ar) ar = (double)dw / dh;
+    if (g_cfg_wide && g_cfg_wide_169) ar = 16.0 / 9.0;            /* Aspect ratio 16:9: that shape in any window, bars round it */
     int H = g_cfg_res_h;
     if (H <= 0) H = g_cfg_wide ? dh : (dh < dw * 3 / 4 ? dh : dw * 3 / 4);   /* native */
     if (H < 240) H = 240;
@@ -198,6 +200,7 @@ void rr_host_set_wide(int on)
     apply_render_size();
 }
 void rr_host_set_fps(int fps) { g_cfg_fps = eng_vsync_rate_valid(fps); char v[8]; snprintf(v, sizeof v, "%d", g_cfg_fps); save_opt("frame_rate", v); }
+void rr_host_set_wide_169(int on) { g_cfg_wide_169 = on != 0; save_opt("wide_aspect", g_cfg_wide_169 ? "16:9" : "window"); apply_render_size(); }
 void rr_host_set_aspect(int a) { g_cfg_aspect = a < 0 ? 0 : a > 3 ? 3 : a; save_opt("aspect", aspect_name[g_cfg_aspect]); }
 void rr_host_set_scaling(int sc) { g_cfg_scaling = sc < 0 ? 0 : sc > 2 ? 2 : sc; apply_scaling(); save_opt("scaling", scaling_name[g_cfg_scaling]); }
 void rr_host_set_volume(int pct)
@@ -205,6 +208,12 @@ void rr_host_set_volume(int pct)
     g_cfg_volume = pct < 0 ? 0 : pct > 100 ? 100 : pct;
     rr_audio_set_volume(g_cfg_volume);
     char v[8]; snprintf(v, sizeof v, "%d", g_cfg_volume); save_opt("volume", v);
+}
+void rr_host_set_car(int i)
+{
+    if (!g_rr_game->car_set || i < 0 || i >= g_rr_game->ncars) return;
+    g_rr_game->car_set(i);
+    char v[8]; snprintf(v, sizeof v, "%d", i); save_opt("car", v);
 }
 void rr_host_set_freeplay(bool on)
 {
@@ -219,6 +228,8 @@ void rr_host_set_ffb_strength(int pct)
     char v[8]; snprintf(v, sizeof v, "%d", g_cfg_ffb_strength); save_opt("ffb_strength", v);
 }
 void rr_host_set_ffb_invert(bool on) { g_cfg_ffb_invert = on; save_opt("ffb_invert", on ? "1" : "0"); }
+void rr_host_set_ffb_restart(bool on) { eng_ffb_set_restart(on); save_opt("ffb_restart", on ? "1" : "0"); }
+void rr_host_set_ffb_log(bool on) { eng_ffb_set_log(on); save_opt("ffb_log", on ? "1" : "0"); fprintf(stderr, "[FFB] log %s\n", on ? "ON" : "OFF"); }
 void rr_host_set_stick_steer(int level)
 {
     g_cfg_stick_steer = (level % RR_STICK_N + RR_STICK_N) % RR_STICK_N;
@@ -320,8 +331,22 @@ static void apply_fullscreen(void)
 }
 static void save_opt(const char *k, const char *v) { rr_input_set_option(g_rr_game->cfg_file, k, v); }
 
+/* THE TWIN-STICK CABINET's bindable controls (Cyber Commando; engine/twin_stick.c): both sticks' eight directions, the gun trigger,
+ * the missile button and View (the cabinet wires each stick's trigger and button to one bit) and the strafe modifier. The tank keys
+ * (forward / back / turn) stay the gas / brake / steer actions, so a wheel and pedals still bind there. */
+enum { TW_GUN = TS_NDIR, TW_MISSILE, TW_VIEW, TW_STRAFE, TW_N };
+static const ts_def tw_ctl[TW_N] = {
+    [TS_L_UP]    = { "Left stick up",    "left_up",    "E", "-lefty" },  [TS_L_DOWN]  = { "Left stick down",  "left_down",  "D", "+lefty" },
+    [TS_L_LEFT]  = { "Left stick left",  "left_left",  "S", "-leftx" },  [TS_L_RIGHT] = { "Left stick right", "left_right", "F", "+leftx" },
+    [TS_R_UP]    = { "Right stick up",   "right_up",   "I", "-righty" }, [TS_R_DOWN]  = { "Right stick down", "right_down", "K", "+righty" },
+    [TS_R_LEFT]  = { "Right stick left", "right_left", "J", "-rightx" }, [TS_R_RIGHT] = { "Right stick right", "right_right", "L", "+rightx" },
+    [TW_GUN]     = { "Gun trigger", "gun", "Z", "a,+righttrigger" }, [TW_MISSILE] = { "Missile", "missile", "X", "b,+lefttrigger" },
+    [TW_VIEW]    = { "View change", "view", "C", "y" },
+    [TW_STRAFE]  = { "Strafe (with Turn)", "tank_strafe", "Left Shift,Right Shift", NULL },
+};
 bool rr_host_open(int scale)
 {
+    if (g_rr_game->twin_stick) ts_init(tw_ctl, TW_N, save_opt);    /* before the config: its ts_ lines land here */
     rr_input_load(g_rr_game->cfg_file);
     if (scale > 0) g_cfg_scale = scale;                /* --window N overrides the saved size */
     if (getenv("RR_FULLSCREEN")) { g_cfg_fullscreen = atoi(getenv("RR_FULLSCREEN")) != 0; g_cfg_winmode = g_cfg_fullscreen; }
@@ -452,7 +477,8 @@ static bool pad_steer_ex(int *out, bool raw_only)   /* -32767..32767; raw_only: 
                 const int m = (int)lround(pow(abs(v) / 32767.0, g_stick_steer_curve[g_cfg_stick_steer]) * 32767.0);
                 v = v > 0 ? (m ? m : 1) : -(m ? m : 1);
             }
-        } else if (rr_input_axis_device(&g_joy_steer, dev[d].js) && g_joy_steer.axis >= 0 && g_joy_steer.axis < SDL_JoystickNumAxes(dev[d].js)) {
+        } else if (rr_input_axis_device(&g_joy_steer, dev[d].js) && g_joy_steer.axis >= 0 && g_joy_steer.axis < SDL_JoystickNumAxes(dev[d].js) &&
+                   !(g_rr_game->twin_stick && !g_joy_steer.guid[0] && ts_uses_joystick(dev[d].js))) {   /* the unbound default: not a stick */
             /* a wheel: only a sliver of deadzone, and rescaled to START at its edge. A cut-off +-1000 without the rescale left 3% of
              * the lock dead and then jumped the steering 0x2B at once: a step exactly at the centre, which the steering motor's
              * centring then held the wheel against */
@@ -508,7 +534,9 @@ static void wheel_motor(bool hold)
             if (pass == 0 ? bound : pass == 1 ? !bound && capable : !bound && !capable) cand[n++] = js;
         }
     ffb_wheel = eng_ffb_device_from(cand, n);
-    if (ffb_wheel)
+    if (ffb_wheel && g_rr_game->ffb_synth)            /* no motor on this cabinet: the game table builds the force (rr_game.h) */
+        eng_ffb_force_f(hold ? 0.0 : g_rr_game->ffb_synth(), g_cfg_ffb_strength, g_joy_steer.invert != (g_cfg_ffb_invert != 0));
+    else if (ffb_wheel)
         eng_ffb_force(hold ? 0 : motor_hold_off(eng_ffb_decode(rr_hw_motor_byte())), g_cfg_ffb_strength, g_joy_steer.invert != (g_cfg_ffb_invert != 0));
 }
 static bool pad_steer(int *out) { return pad_steer_ex(out, false); }
@@ -551,40 +579,28 @@ static double raw_pedal(bool gas)
     }
     return best;
 }
-static int pad_stick(SDL_GameControllerAxis a)        /* -32767..32767, deadzone removed, the strongest gamepad */
-{
-    int best = 0;
-    for (int d = 0; d < MAX_DEV; d++) {
-        if (!dev[d].gc) continue;
-        int v = SDL_GameControllerGetAxis(dev[d].gc, a);
-        if (v > -g_pad_deadzone && v < g_pad_deadzone) v = 0;
-        else v = (v > 0 ? v - g_pad_deadzone : v + g_pad_deadzone) * 32767 / (32767 - g_pad_deadzone);
-        if (abs(v) > abs(best)) best = v;
-    }
-    return best;
-}
 static void twin_stick_inputs(void)
 {
     enum { LO = 0x47, MID = 0x7F, HI = 0xB7, STEP = 10 };
-    /* Cyber Sled's layout (cybsled/src/host/s21_input.c), the same kind of cabinet: Up/Down both sticks forward/back,
-     * Left/Right the sticks opposite (turn), Shift + Left/Right both sticks sideways (strafe); E/D/S/F and I/K/J/L work each
-     * stick on its own, as MAME's default keys for this game do (PORT_CODE_DEC/INC: E/S/I/J = the LOW value = forward/left). */
-    const Uint8 *k = SDL_GetKeyboardState(NULL);
-    const int shift = k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT];
+    /* Cyber Sled's layout (cybsled/src/host/s21_input.c), the same kind of cabinet: Forward/Back both sticks forward/back,
+     * Turn left/right the sticks opposite (turn), Strafe + Turn both sticks sideways (strafe); each stick's four directions on their
+     * own are the Controls page's stick rows (twin_stick.c; defaults E/D/S/F and I/K/J/L as MAME's keys for this game, and a
+     * gamepad's two sticks). */
+    ts_keys(!rr_ui_chat_typing() && !rr_ui_is_open());
+    const int shift = ts_held(TW_STRAFE);
     const int fwd = held(RR_GAS), back = held(RR_BRAKE), tl = held(RR_STEER_LEFT), tr = held(RR_STEER_RIGHT);
     const int turn = shift ? 0 : tr - tl, side = shift ? tr - tl : 0;
     int kl = back - fwd - turn, kr = back - fwd + turn;                /* -1 = forward (low), +1 = back (high), per stick */
     kl = kl < -1 ? -1 : kl > 1 ? 1 : kl; kr = kr < -1 ? -1 : kr > 1 ? 1 : kr;
-    static const SDL_GameControllerAxis pad_ax[4] = { SDL_CONTROLLER_AXIS_RIGHTY, SDL_CONTROLLER_AXIS_LEFTY,
-                                                      SDL_CONTROLLER_AXIS_RIGHTX, SDL_CONTROLLER_AXIS_LEFTX };
+    /* ADC.0 right Y, ADC.1 left Y, ADC.2 right X, ADC.3 left X: up / left = low */
+    static const int lev[4][2] = { { TS_R_UP, TS_R_DOWN }, { TS_L_UP, TS_L_DOWN }, { TS_R_LEFT, TS_R_RIGHT }, { TS_L_LEFT, TS_L_RIGHT } };
     int key[4] = { kr, kl, side, side };
-    if (!rr_ui_is_open()) {
-        const int lev[4][2] = { { SDL_SCANCODE_I, SDL_SCANCODE_K }, { SDL_SCANCODE_E, SDL_SCANCODE_D },
-                                { SDL_SCANCODE_J, SDL_SCANCODE_L }, { SDL_SCANCODE_S, SDL_SCANCODE_F } };
-        for (int i = 0; i < 4; i++) {
-            const int d = k[lev[i][1]] - k[lev[i][0]];
-            if (d) key[i] = d;
-        }
+    double an[4];
+    for (int i = 0; i < 4; i++) {
+        bool dig; const double v = ts_lever(lev[i][0], lev[i][1], &dig);
+        an[i] = 0;
+        if (dig) key[i] = v < 0 ? -1 : 1;                              /* a key / button / hat on this stick's own direction */
+        else an[i] = v;                                                 /* an axis (0 = at rest) */
     }
     /* A WHEEL AND PEDALS (raw joysticks bound in the Controls page to Turn / Forward / Back): the wheel turns -- the two sticks
      * opposite, as the Turn keys -- the gas pedal pushes both forward, the brake pedal both back. All analog. */
@@ -595,10 +611,9 @@ static void twin_stick_inputs(void)
     double wl = -thr - wheel / 32767.0, wr = -thr + wheel / 32767.0;    /* the sticks, -1 = forward (low) .. +1 = back (high) */
     wl = wl < -1 ? -1 : wl > 1 ? 1 : wl; wr = wr < -1 ? -1 : wr > 1 ? 1 : wr;
     for (int i = 0; i < 4; i++) {
-        const int p = pad_stick(pad_ax[i]);
         int v = g_hw.adc[i];
-        if (!key[i] && !p && analog_drive && i < 2) v = MID + (int)((i == 0 ? wr : wl) * (HI - MID));   /* i: 0 right Y, 1 left Y */
-        else if (!key[i] && p) v = MID + p * (HI - MID) / 32767;        /* an analog stick out of its deadzone sets the ADC */
+        if (!key[i] && an[i] == 0 && analog_drive && i < 2) v = MID + (int)((i == 0 ? wr : wl) * (HI - MID));   /* i: 0 right Y, 1 left Y */
+        else if (!key[i] && an[i] != 0) v = MID + (int)lround(an[i] * (HI - MID));   /* an axis out of its deadzone sets the ADC */
         else {
             const int target = key[i] < 0 ? LO : key[i] > 0 ? HI : MID;
             v += v < target ? (target - v < STEP ? target - v : STEP) : v > target ? -(v - target < STEP ? v - target : STEP) : 0;
@@ -719,6 +734,7 @@ bool rr_host_frame(void)
     rr_ui_input_begin();
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) return false;
+        if (g_rr_game->twin_stick) ts_event(&e);
         if (e.type == SDL_JOYDEVICEADDED) dev_scan();
         if (e.type == SDL_JOYDEVICEREMOVED) dev_remove(e.jdevice.which);
         if (e.type == SDL_KEYDOWN && !e.key.repeat &&
@@ -771,9 +787,10 @@ bool rr_host_frame(void)
         set_bit(0x0800, held(RR_SERVICE) || g_service_frames > 0);
         if (g_service_frames > 0) g_service_frames--;
         set_bit(0x0400, g_test_sw);              /* PORT_SERVICE: the toggle */
-        set_bit(0x0001, held(RR_SHIFT_DOWN));
-        set_bit(0x0002, held(RR_SHIFT_UP));
-        set_bit(0x0040, held(RR_VIEW));
+        const bool tw = g_rr_game->twin_stick;           /* the twin-stick cabinet's buttons are its own Controls rows (twin_stick.c) */
+        set_bit(0x0001, tw ? ts_held(TW_GUN) : held(RR_SHIFT_DOWN));
+        set_bit(0x0002, tw ? ts_held(TW_MISSILE) : held(RR_SHIFT_UP));
+        set_bit(0x0040, tw ? ts_held(TW_VIEW) : held(RR_VIEW));
 
         if (g_rr_game->twin_stick) { twin_stick_inputs(); goto inputs_done; }
         /* an analog source out of its deadzone wins; keys/buttons ramp like MAME's KEYDELTA */

@@ -14,6 +14,7 @@
 #include <string.h>
 #include "s21_video.h"
 #include "s21_video_int.h"
+__attribute__((weak)) uint32_t s21_frame_no(void) { return 0; }   /* the board's frame count (src/board/s21_board.c); 0 without a board */
 
 /* ---- the board's RAM (s21_video_bind) ---- */
 static const uint16_t *v_pal, *v_palx, *v_spr, *v_pos, *v_ven;
@@ -245,8 +246,8 @@ static void single_sprite(uint16_t which, c355_spr *s)
     }
 }
 
-static void zoomdraw(int cx0, int cx1, int cy0, int cy1, uint32_t code, uint32_t color, bool flipx, bool flipy,
-                     int hpos, int vpos, int hsize, int vsize, int prival, int sw, int sh)
+static void zoomdraw_to(uint16_t *bm, int stride, int xoff, int cx0, int cx1, int cy0, int cy1, uint32_t code, uint32_t color, bool flipx, bool flipy,
+                        int hpos, int vpos, int hsize, int vsize, int prival, int sw, int sh)
 {
     if (!hsize || !vsize || !sw || !sh) return;
     const uint32_t pal = COLBASE + 256 * (color % 16);
@@ -262,7 +263,7 @@ static void zoomdraw(int cx0, int cx1, int cy0, int cy1, uint32_t code, uint32_t
     if (ex <= hpos) return;
     for (int y = vpos; y < ey; y++) {
         const uint8_t *src = src_base + (yi >> 16) * 16;
-        uint16_t *dest = render_bm + y * S21_W;
+        uint16_t *dest = bm + (size_t)y * stride + xoff;
         int xi = xib;
         for (int x = hpos; x < ex; x++) {
             const uint8_t c = src[xi >> 16];
@@ -270,6 +271,47 @@ static void zoomdraw(int cx0, int cx1, int cy0, int cy1, uint32_t code, uint32_t
             xi += dx;
         }
         yi += dy;
+    }
+}
+
+/* THE HUD AT THE SCREEN EDGES (widescreen, Display > Widescreen HUD "at the screen edges" = g_eng_hud_edges_on, the Super 22 games'
+ * option). System 21 has no HUD layer: the battle HUD is C355 sprites among the game's other sprites. It is recognised by its FORMAT
+ * entries -- measured over 24,000 frames of play and a random walk (CS_SPRLIST): these formats sit at <= 3 screen positions (the HUD
+ * and its slide-in), where the effects (fmt 65-89, 927, 940-961 ...) are drawn at dozens. A HUD sprite left of the board's centre band
+ * moves left by the strip width, right of it moves right (its clip window with it); the radar, crosshair and messages in the middle
+ * stay. They are drawn into the wide picture after the board (prepare_gl), not into the 4:3 board picture. Off, 4:3 or the software
+ * picture: nothing here runs. */
+__attribute__((weak)) int g_eng_hud_edges_on = 0;        /* src/host/s21_glutil.c (engine/eng_display.c sets it) */
+static int wide_e;
+static int hud_fmt(int f)
+{
+    return (f >= 904 && f <= 905) || f == 921 || (f >= 923 && f <= 926) || (f >= 930 && f <= 934) || f == 937 || f == 939
+        || (f >= 943 && f <= 946) || (f >= 951 && f <= 953) || f == 955 || f == 957 || f == 958 || f == 962 || f == 963
+        || (f >= 986 && f <= 989) || (f >= 994 && f <= 997) || f == 1002 || f == 1107 || f == 1108 || f == 884;
+}
+static int hud_shift[256];                                /* per sprite this frame: -E / 0 / +E (0 = drawn into the board as always) */
+static void sprite_extent(const c355_spr *s, int *x0, int *x1);
+static void hud_classify(void)
+{
+    for (int k = 0; k < nspl; k++) {
+        const c355_spr *s = &spl[k]; hud_shift[k] = 0;
+        if (!wide_e || !g_eng_hud_edges_on || s->disable || s->pri != 3 || !hud_fmt(s->fmt)) continue;
+        int x0, x1; sprite_extent(s, &x0, &x1);
+        if (x0 > x1) { x0 = s->cx0; x1 = s->cx1; }            /* no tile placed (a clipped content sprite): its clip window */
+        const int c = (x0 + x1) / 2;
+        hud_shift[k] = c < S21_W * 2 / 5 ? -wide_e : c > S21_W * 3 / 5 ? wide_e : 0;
+    }
+}
+static void draw_sprite_to(const c355_spr *s, uint16_t *bm, int stride, int xoff, int bx0, int bx1)
+{
+    int cx0 = s->cx0 < bx0 ? bx0 : s->cx0, cx1 = s->cx1 > bx1 ? bx1 : s->cx1;
+    int cy0 = s->cy0 < 0 ? 0 : s->cy0, cy1 = s->cy1 > S21_H - 1 ? S21_H - 1 : s->cy1;
+    if (cx0 > cx1 || cy0 > cy1) return;
+    for (int ind = 0; ind < s->size; ind++) {
+        if (s->tile[ind] & 0x8000) continue;
+        const int sh = (s->zoomy[ind] * 16 + 0x8000) >> 16, sw = (s->zoomx[ind] * 16 + 0x8000) >> 16;
+        zoomdraw_to(bm, stride, xoff, cx0, cx1, cy0, cy1, (uint32_t)(s->tile[ind] + s->offset), (uint32_t)s->color, s->flipx, s->flipy,
+                    s->x[ind] >> 16, s->y[ind] >> 16, s->zoomx[ind], s->zoomy[ind], s->pri, sw, sh);
     }
 }
 
@@ -284,18 +326,20 @@ static void build_and_render_sprites(void)
         if (which & 0x100) break;
     }
     for (int i = 0; i < FB; i++) render_bm[i] = 0xffff;
+    { static long at = -2;          /* CS_SPRLIST=<frame>: the sprite list that frame (classifying the HUD) */
+      static long to, every = 1;                                          /* CS_SPRLIST=<frame>[:<to>:<every>] */
+      if (at == -2) { const char *e = getenv("CS_SPRLIST"); at = -1; if (e) { at = atol(e); to = at; sscanf(e, "%ld:%ld:%ld", &at, &to, &every); if (every < 1) every = 1; } }
+      if (at >= 0 && (long)s21_frame_no() >= at && (long)s21_frame_no() <= to && (s21_frame_no() - (uint32_t)at) % (uint32_t)every == 0) {
+          fprintf(stderr, "[SPR] frame %u\n", s21_frame_no());
+          for (int k = 0; k < nspl; k++) { const c355_spr *s = &spl[k]; if (s->disable) { fprintf(stderr, "[SPR] %3d off\n", k); continue; }
+              int x0, x1; extern void s21v_sprite_extent_dbg(const void *, int *, int *); s21v_sprite_extent_dbg(s, &x0, &x1);
+              fprintf(stderr, "[SPR] %3d pri %d clip %d..%d x %d..%d y %d size %d zoom %d/%d fmt %d tile %04X col %d\n", k, s->pri, s->cx0, s->cx1,
+                      x0, x1, s->y[0] >> 16, s->size, s->zoomx[0], s->zoomy[0], s->fmt, s->tile[0], s->color); } } }
+    hud_classify();
     for (int k = 0; k < nspl; k++) {
         const c355_spr *s = &spl[k];
-        if (s->disable) continue;
-        int cx0 = s->cx0 < 0 ? 0 : s->cx0, cx1 = s->cx1 > S21_W - 1 ? S21_W - 1 : s->cx1;
-        int cy0 = s->cy0 < 0 ? 0 : s->cy0, cy1 = s->cy1 > S21_H - 1 ? S21_H - 1 : s->cy1;
-        if (cx0 > cx1 || cy0 > cy1) continue;
-        for (int ind = 0; ind < s->size; ind++) {
-            if (s->tile[ind] & 0x8000) continue;
-            const int sh = (s->zoomy[ind] * 16 + 0x8000) >> 16, sw = (s->zoomx[ind] * 16 + 0x8000) >> 16;
-            zoomdraw(cx0, cx1, cy0, cy1, (uint32_t)(s->tile[ind] + s->offset), (uint32_t)s->color, s->flipx, s->flipy,
-                     s->x[ind] >> 16, s->y[ind] >> 16, s->zoomx[ind], s->zoomy[ind], s->pri, sw, sh);
-        }
+        if (s->disable || hud_shift[k]) continue;         /* a HUD sprite going to an edge: drawn into the wide picture instead */
+        draw_sprite_to(s, render_bm, S21_W, 0, 0, S21_W - 1);
     }
 }
 int s21_video_sprites_last(void) { return nspl; }
@@ -428,7 +472,6 @@ static void encode_2d(const uint16_t *bm, uint32_t *o32, int n)
  * (W2 = 496 + 2E wide, the board in the middle) and the board columns the clip window left empty, never over a pixel a sprite drew.
  * HUD, text, logos and sprites at other priorities stay where the board drew them. E = 0: none of this runs. */
 #define WE_MAX 1024
-static int wide_e;
 void s21_video_set_wide_extra(int e) { wide_e = e < 0 ? 0 : e > WE_MAX ? WE_MAX : e; }
 static uint16_t wbm[(S21_W + 2 * WE_MAX) * S21_H];
 static uint32_t gl2dw[(S21_W + 2 * WE_MAX) * S21_H];
@@ -463,6 +506,7 @@ static int slice_note(const c355_spr *s, uint32_t key, int w)
     slc[i].spr = *s; slc[i].w = w;                      /* the latest look (position irrelevant: drawn relative to its own extent) */
     return i;
 }
+void s21v_sprite_extent_dbg(const void *s, int *x0, int *x1) { sprite_extent((const c355_spr *)s, x0, x1); }
 static void slice_pair(int side, uint32_t a, uint32_t b)   /* b seen on `side` of a */
 {
     const int i = slice_find(a);
@@ -598,6 +642,13 @@ static void prepare_gl(bool sprites_built)
             memcpy(r + wide_e, render_bm + (size_t)y * S21_W, S21_W * sizeof *wbm);
         }
         wide_backdrop();
+        for (int k = 0; k < nspl; k++)                  /* the HUD at the screen edges, on top as before */
+            if (hud_shift[k]) {
+                c355_spr t = spl[k];
+                for (int i = 0; i < t.size; i++) t.x[i] += hud_shift[k] << 16;
+                t.cx0 += hud_shift[k]; t.cx1 += hud_shift[k];
+                draw_sprite_to(&t, wbm, W2, wide_e, -wide_e, S21_W - 1 + wide_e);
+            }
         encode_2d(wbm, gl2dw, W2 * S21_H);
         gl2d_w = W2;
         static int lg = -1; if (lg < 0) lg = getenv("CS_WIDELOG") != NULL;

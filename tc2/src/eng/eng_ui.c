@@ -23,6 +23,7 @@
 #include "../../third_party/nuklear_sdl_gl2.h"
 
 #include "eng_ui.h"
+#include "eng_crosshair.h"
 #include "ss22_input.h"
 #include "eng_cfg.h"
 #include "eng_vsync.h"
@@ -32,6 +33,9 @@
 static struct nk_context *ctx;
 static SDL_Window *uwin;
 static bool open_, quit_req, restart_req;
+static struct nk_font *big_font[3];            /* larger copies of the default font (20 / 28 / 40): the subtitles */
+const struct nk_user_font *eng_ui_font_big(float h)   /* the largest of them no taller than h window units (else the smallest) */
+{ struct nk_font *f = big_font[0]; for (int i = 1; i < 3; i++) if (big_font[i] && big_font[i]->handle.height <= h) f = big_font[i]; return f ? &f->handle : NULL; }
 static float ui_scale = 1.0f;                 /* drawable pixels per window unit (HiDPI) */
 static const eng_ui_page *pages[MAXPAGES];
 static int npages;
@@ -60,9 +64,10 @@ static void file_change(int r, int dir)
 }
 static const eng_ui_page page_file = { "File", 220, 0, 0, file_n, file_val, NULL, file_text, file_change, NULL };
 
-int tc2_depth_on(void); void tc2_depth_set(int on);   /* src/tc2_render.c: exact depth */
-extern int tc2_out_net, tc2_out_rumble;                  /* src/tc2_out.c: the recoil outputs */
-void tc2_out_set_net(int on), tc2_out_set_rumble(int on);
+int tc2_depth_on(void); void tc2_depth_set(int on);     /* src/tc2_render.c: exact depth */
+int tc2_smooth_on(void); void tc2_smooth_set(int on);   /* src/tc2_render.c: motion smoothing */
+extern int tc2_out_net, tc2_out_rumble, tc2_out_lamps;                  /* src/tc2_out.c: the recoil outputs */
+void tc2_out_set_net(int on), tc2_out_set_rumble(int on), tc2_out_set_lamps(int on);
 extern int tc2_pic_c404, tc2_pic_gamma, tc2_pic_bright;   /* src/tc2_render.c: the picture adjustments */
 static void bar(char *v, size_t vn, int val, int lo, int hi, const char *txt)   /* "[######----] txt": where val sits in lo..hi */
 {
@@ -71,13 +76,14 @@ static void bar(char *v, size_t vn, int val, int lo, int hi, const char *txt)   
     b[10] = 0; snprintf(v, vn, "[%s] %s", b, txt);
 }
 /* ---- Display: the choices of engine/eng_display.h ------------------------------ */
-enum { D_WIDE, D_MODE, D_SIZE, D_RES, D_ASPECT, D_SCALING, D_HUD, D_FPS, D_DEPTH, D_C404, D_GAMMA, D_BRIGHT, D_CROSS, D_FLASH, D_OUTNET, D_RUMBLE, D_N };   /* D_CROSS.. last: only light-gun games show them */
+enum { D_WIDE, D_MODE, D_SIZE, D_RES, D_ASPECT, D_SCALING, D_HUD, D_FPS, D_SMOOTH, D_DEPTH, D_C404, D_GAMMA, D_BRIGHT, D_CROSS, D_XIMG, D_FLASH, D_OUTNET, D_LAMPS, D_RUMBLE, D_N };   /* D_CROSS.. last: only light-gun games show them */
 static int disp_n(void) { return g_eng_disp_light_gun ? D_N : D_CROSS; }
 static bool disp_enabled(int r)
 {
     if (r == D_SIZE) return g_eng_disp.winmode == 0;
     if (r == D_ASPECT) return !g_eng_disp.wide;
     if (r == D_HUD) return g_eng_disp.wide;
+    if (r == D_XIMG) return g_eng_disp.crosshair;
     return true;
 }
 static void disp_text(int r, char *l, size_t ln, char *v, size_t vn)
@@ -93,6 +99,7 @@ static void disp_text(int r, char *l, size_t ln, char *v, size_t vn)
     case D_SCALING: snprintf(l, ln, "Scaling"); snprintf(v, vn, "%s", eng_disp_scaling_name(g_eng_disp.scaling)); break;
     case D_HUD:     snprintf(l, ln, "Widescreen HUD"); snprintf(v, vn, "%s", g_eng_disp.hud_edges ? "at the screen edges" : "original (4:3 centre)"); break;
     case D_FPS:     snprintf(l, ln, "Frame rate"); snprintf(v, vn, "%s", eng_vsync_rate_name(g_eng_disp.fps)); break;
+    case D_SMOOTH:  snprintf(l, ln, "Motion smoothing (100+ fps)"); snprintf(v, vn, "%s", tc2_smooth_on() ? "ON (in-between pictures, +8 ms lag)" : "OFF (as the arcade)"); break;
     case D_DEPTH:   snprintf(l, ln, "Depth"); snprintf(v, vn, "%s", tc2_depth_on() ? "exact (no z-fighting)" : "arcade sorting"); break;
     case D_C404:    { char t[48]; snprintf(t, sizeof t, tc2_pic_c404 == 100 ? "100%% (the board's table)" : tc2_pic_c404 ? "%d%%" : "0%% (as MAME)", tc2_pic_c404);
                       snprintf(l, ln, "Arcade gamma"); bar(v, vn, tc2_pic_c404, 0, 100, t); break; }
@@ -101,8 +108,10 @@ static void disp_text(int r, char *l, size_t ln, char *v, size_t vn)
     case D_BRIGHT:  { char t[32]; snprintf(t, sizeof t, "%d%%%s", tc2_pic_bright, tc2_pic_bright == 100 ? " (neutral)" : "");
                       snprintf(l, ln, "Brightness"); bar(v, vn, tc2_pic_bright, 50, 150, t); break; }
     case D_CROSS:   snprintf(l, ln, "Crosshair"); snprintf(v, vn, "%s", g_eng_disp.crosshair ? "ON" : "OFF"); break;
+    case D_XIMG:    snprintf(l, ln, "Crosshair image"); snprintf(v, vn, eng_xhair_count() ? "%s" : "%s (no PNG in crosshairs/)", eng_xhair_name()); break;
     case D_FLASH:   snprintf(l, ln, "Gun shot flash"); if (ss22_input_gun_flash() == 100) snprintf(v, vn, "100%% (as the arcade)"); else if (ss22_input_gun_flash()) snprintf(v, vn, "%d%%", ss22_input_gun_flash()); else snprintf(v, vn, "OFF (no white flash)"); break;
     case D_OUTNET:  snprintf(l, ln, "Recoil outputs (Hook of the Reaper)"); snprintf(v, vn, "%s", tc2_out_net ? "ON (tcp port 8000)" : "OFF"); break;
+    case D_LAMPS:   snprintf(l, ln, "Lamp outputs (lamp0-7)"); snprintf(v, vn, "%s", tc2_out_lamps ? "ON" : "OFF (recoil only)"); break;
     case D_RUMBLE:  snprintf(l, ln, "Pad rumble on recoil"); snprintf(v, vn, "%s", tc2_out_rumble ? "ON" : "OFF"); break;
     }
 }
@@ -124,6 +133,7 @@ static void disp_change(int r, int dir)
     case D_SCALING: eng_disp_set_scaling(cyc(g_eng_disp.scaling, d, 3)); break;
     case D_HUD:     eng_disp_set_hud_edges(!g_eng_disp.hud_edges); break;
     case D_FPS:     eng_disp_set_fps(eng_vsync_rate_step(g_eng_disp.fps, d)); break;
+    case D_SMOOTH:  tc2_smooth_set(!tc2_smooth_on()); eng_cfg_set_int("motion_smooth", tc2_smooth_on()); break;
     case D_DEPTH:   tc2_depth_set(!tc2_depth_on()); eng_cfg_set_int("depth", tc2_depth_on()); break;
     case D_C404:    tc2_pic_c404 = dir ? tc2_pic_c404 + 10 * dir : (tc2_pic_c404 >= 100 ? 0 : tc2_pic_c404 + 10);     /* Left/Right 10% steps, Enter cycles */
                     if (tc2_pic_c404 < 0) tc2_pic_c404 = 0; if (tc2_pic_c404 > 100) tc2_pic_c404 = 100; eng_cfg_set_int("pic_c404", tc2_pic_c404); break;
@@ -132,8 +142,10 @@ static void disp_change(int r, int dir)
     case D_BRIGHT:  tc2_pic_bright = dir ? tc2_pic_bright + 5 * dir : (tc2_pic_bright >= 150 ? 50 : tc2_pic_bright + 5); /* 5% steps */
                     if (tc2_pic_bright < 50) tc2_pic_bright = 50; if (tc2_pic_bright > 150) tc2_pic_bright = 150; eng_cfg_set_int("pic_bright", tc2_pic_bright); break;
     case D_CROSS:   eng_disp_set_crosshair(!g_eng_disp.crosshair); break;
+    case D_XIMG:    eng_xhair_step(d); break;
     case D_FLASH:   ss22_input_flash_step(dir); break;
     case D_OUTNET:  tc2_out_set_net(!tc2_out_net); break;
+    case D_LAMPS:   tc2_out_set_lamps(!tc2_out_lamps); break;
     case D_RUMBLE:  tc2_out_set_rumble(!tc2_out_rumble); break;
     }
 }
@@ -172,19 +184,19 @@ static void disp_notes(void (*line)(const char *fmt, ...))
 static const eng_ui_page page_display = { "Display", 440, 120, 26, disp_n, NULL, disp_enabled, disp_text, disp_change, disp_notes };
 
 /* ---- Audio ------------------------------------------------------------------- */
-extern int g_c352_gain_music, g_c352_gain_fx;                /* c352.c: the music and effects gains (percent) */
-static int aud_n(void) { return 3; }
-static int *aud_ptr(int r) { return r == 1 ? &g_c352_gain_music : &g_c352_gain_fx; }
+extern int g_c352_gain_music, g_c352_gain_fx, g_c352_gain_voice;   /* c352.c: the music, effects and speech gains (percent) */
+static int aud_n(void) { return 4; }
+static int *aud_ptr(int r) { return r == 1 ? &g_c352_gain_music : r == 3 ? &g_c352_gain_voice : &g_c352_gain_fx; }
 static void aud_set(int r, int v)
 {
     v = v < 0 ? 0 : v > 100 ? 100 : v;
     if (r == 0) { eng_disp_set_volume(v); return; }
-    *aud_ptr(r) = v; eng_cfg_set_int(r == 1 ? "music_volume" : "effects_volume", v);
+    *aud_ptr(r) = v; eng_cfg_set_int(r == 1 ? "music_volume" : r == 3 ? "voice_volume" : "effects_volume", v);
 }
 static int aud_get(int r) { return r == 0 ? g_eng_disp.volume : *aud_ptr(r); }
 static void aud_text(int r, char *l, size_t ln, char *v, size_t vn)
 {
-    snprintf(l, ln, "%s", r == 0 ? "Volume" : r == 1 ? "Music volume" : "Effects volume"); snprintf(v, vn, "%d%%", aud_get(r));
+    snprintf(l, ln, "%s", r == 0 ? "Volume" : r == 1 ? "Music volume" : r == 2 ? "Effects volume" : "Voice volume"); snprintf(v, vn, "%d%%", aud_get(r));
 }
 static void aud_change(int r, int dir)
 {
@@ -227,8 +239,10 @@ bool eng_ui_init(SDL_Window *win, const char *title)
     struct nk_font_config cfg = nk_font_config(0);
     nk_sdl_font_stash_begin(&atlas);
     struct nk_font *font = nk_font_atlas_add_default(atlas, 15 * ui_scale, &cfg);
+    { static const float bs[3] = { 20, 28, 40 }; for (int i = 0; i < 3; i++) big_font[i] = nk_font_atlas_add_default(atlas, bs[i] * ui_scale, &cfg); }   /* the subtitles' (src/tc2_subs.c) */
     nk_sdl_font_stash_end();
     font->handle.height /= ui_scale;
+    for (int i = 0; i < 3; i++) big_font[i]->handle.height /= ui_scale;
     nk_style_set_font(ctx, &font->handle);
     /* the three every game shares come first; the game's pages are added after */
     if (npages == 0) { pages[npages++] = &page_file; pages[npages++] = &page_display; pages[npages++] = &page_audio; }
@@ -260,6 +274,10 @@ void eng_ui_input_end(void)   { if (ctx) nk_input_end(ctx); }
 void eng_ui_capture_key(void (*cb)(SDL_Scancode, void *), void *u) { input_cap_cb = NULL; cap_cb = cb; cap_u = u; }
 void eng_ui_capture_input(bool (*cb)(const SDL_Event *, void *), void *u) { cap_cb = NULL; input_cap_cb = cb; cap_u = u; }
 bool eng_ui_capturing(void) { return cap_cb != NULL || input_cap_cb != NULL; }
+#define MAXLAYERS 4
+static const eng_ui_layer *layers[MAXLAYERS]; static int nlayers;
+void eng_ui_add_layer(const eng_ui_layer *l) { if (nlayers < MAXLAYERS) layers[nlayers++] = l; }
+static bool layer_modal(void) { for (int i = 0; i < nlayers; i++) if (layers[i]->modal && layers[i]->modal()) return true; return false; }
 void eng_ui_goto(int p, int r) { if (p >= 0 && p < npages) { tab = p; row = r; } }
 
 /* one navigation step from the keyboard, a pad or a hat */
@@ -290,7 +308,10 @@ void eng_ui_nav(char c)
 
 bool eng_ui_event(SDL_Event *e)
 {
-    if (!ctx || !open_) return false;
+    if (!ctx) return false;
+    for (int i = 0; i < nlayers; i++)                    /* a layer first (the chat box, the lobby window's keys) */
+        if (layers[i]->event && layers[i]->event(e, open_)) return true;
+    if (!open_) return false;
     if (input_cap_cb) {
         if (input_cap_cb(e, cap_u)) input_cap_cb = NULL;
         return true;
@@ -303,6 +324,10 @@ bool eng_ui_event(SDL_Event *e)
             void (*cb)(SDL_Scancode, void *) = cap_cb; cap_cb = NULL;
             cb(SDL_SCANCODE_UNKNOWN, cap_u);
         }
+        return true;
+    }
+    if (layer_modal()) {                                 /* a layer's window has the keyboard: only the mouse goes on to Nuklear */
+        if (e->type != SDL_KEYDOWN && e->type != SDL_KEYUP && e->type != SDL_TEXTINPUT && e->type != SDL_CONTROLLERBUTTONDOWN) nk_sdl_handle_event(e);
         return true;
     }
     int k = -1;
@@ -358,6 +383,9 @@ void eng_ui_draw(bool *quit)
     if (quit_req && quit) *quit = true;
     if (!ctx) return;
     if (!open_) {                                    /* the menu-button hint (a pad has no Esc), for a few seconds after the start */
+        int lw, lh; SDL_GetWindowSize(uwin, &lw, &lh);
+        bool any = hint_left > 0 && hint_text[0];
+        for (int i = 0; i < nlayers; i++) if (layers[i]->draw) { layers[i]->draw(ctx, lw, lh, false); any = true; }
         if (hint_left > 0 && hint_text[0]) {
             hint_left--;
             int hw, hh; SDL_GetWindowSize(uwin, &hw, &hh);
@@ -367,8 +395,8 @@ void eng_ui_draw(bool *quit)
                 nk_label(ctx, hint_text, NK_TEXT_CENTERED);
             }
             nk_end(ctx);
-            nk_sdl_render(NK_ANTI_ALIASING_ON);
         }
+        if (any) nk_sdl_render(NK_ANTI_ALIASING_ON);
         return;
     }
     int ww, wh;
@@ -443,6 +471,7 @@ void eng_ui_draw(bool *quit)
         if (pg->notes) { nk_layout_row_dynamic(ctx, 18, 1); pg->notes(note_line); }
     }
     nk_end(ctx);
+    for (int i = 0; i < nlayers; i++) if (layers[i]->draw) layers[i]->draw(ctx, ww, wh, true);   /* on top of the menu */
 
     nk_sdl_render(NK_ANTI_ALIASING_ON);        /* scales window units to the drawable itself */
 }

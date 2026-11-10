@@ -1,6 +1,6 @@
 
  ==================================================================
-  Prop Cycle / Rave Racer / Tokyo Wars / Dirt Dash / Armadillo Racing / Time Crisis / Ace Driver / Cyber Commando / Cyber Sled / Time Crisis 2 are installed.  THE GAMES NEED ROM FILES.
+  Prop Cycle / Rave Racer / Tokyo Wars / Dirt Dash / Armadillo Racing / Time Crisis / Ace Driver / Cyber Commando / Ridge Racer 2 / Cyber Sled / Time Crisis 2 / Crisis Zone / Angler King are installed.  THE GAMES NEED ROM FILES.
  ==================================================================
   No game data is included. Put the MAME ROM sets here:
 
@@ -28,17 +28,26 @@
     Cyber Commando:  cybrcomm.zip  AND  namcoc74.zip
                  -> ~/.local/share/namco-2x-systems/cybrcomm/roms/
 
+    Ridge Racer 2:  ridgera2.zip  AND  namcoc74.zip
+                 -> ~/.local/share/namco-2x-systems/ridgera2/roms/
+
     Cyber Sled:  cybsled.zip  AND  namcoc67.zip  AND  namcoc68.zip
                  -> ~/.local/share/namco-2x-systems/cybsled/roms/
 
     Time Crisis 2:  timecrs2.zip
                  -> ~/.local/share/namco-2x-systems/tc2/roms/
 
+    Crisis Zone:  crszone.zip
+                 -> ~/.local/share/namco-2x-systems/crszone/roms/
+
+    Angler King:  aking.zip  (and namco_fca10.zip, if your MAME set has it)
+                 -> ~/.local/share/namco-2x-systems/aking/roms/
+
   (Folders from an older namco22 install, ~/.local/share/namco22/, are used as they are.)
 
   (Each user has their own folder. Starting a game once creates it
    and opens it for you. Zips already in ~/Downloads are found
-   automatically.)  Then start "Prop Cycle", "Rave Racer", "Tokyo Wars", "Dirt Dash", "Armadillo Racing", "Time Crisis", "Ace Driver", "Cyber Commando", "Cyber Sled" or "Time Crisis 2"
-  from the applications menu, or run:  propcycle / raveracer / tokyowars / dirtdash / armadilloracing / timecrisis / acedriver / cybercommando / cybersled / timecrisis2
+   automatically.)  Then start "Prop Cycle", "Rave Racer", "Tokyo Wars", "Dirt Dash", "Armadillo Racing", "Time Crisis", "Ace Driver", "Cyber Commando", "Ridge Racer 2", "Cyber Sled", "Time Crisis 2", "Crisis Zone" or "Angler King"
+  from the applications menu, or run:  propcycle / raveracer / tokyowars / dirtdash / armadilloracing / timecrisis / acedriver / cybercommando / ridgeracer2 / cybersled / timecrisis2 / crisiszone / anglerking
  ==================================================================
 

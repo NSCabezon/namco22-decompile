@@ -1,6 +1,9 @@
 #!/bin/bash
 # Start a game.
 #
+#   Any game also takes --fullscreen and --set KEY=VALUE (a line of its settings file, for this run only),
+#   e.g.  ./launch.sh rave 2 --set widescreen=1 --set volume=50
+#
 #   ./launch.sh              this list
 #
 #   ./launch.sh prop         Prop Cycle, from the start (press 5 for a coin)
@@ -13,6 +16,7 @@
 #   ./launch.sh tc           Time Crisis (add a number for the window size: tc 2) -- the mouse is the gun
 #   ./launch.sh ad           Ace Driver (add a number for the window size: ad 3)
 #   ./launch.sh cc           Cyber Commando (add a number for the window size: cc 3)
+#   ./launch.sh r2           Ridge Racer 2 (add a number for the window size: r2 3)
 #   ./launch.sh cs           Cyber Sled (add a number for the window size: cs 2)
 #
 # Prop Cycle keys:  5 coin, Enter start, arrow keys steer, Space pedal,
@@ -31,8 +35,29 @@
 #                   V view, F2 test switch, Esc menu (Debug: developer screens), F12 picture.
 # Cyber Commando keys: 5 coin (a game costs two), arrow keys drive (Shift + Left/Right strafe), E/D/S/F + I/K/J/L the two
 #                   sticks, Z gun, X missile, C view, F2 test switch, Esc menu, F12 picture. (Cyber Sled's layout.)
+# Ridge Racer 2 keys: 5 coin (a game costs three), X or Up gas (also confirms: no Start button), Z or Down brake,
+#                   Left/Right steer, A/S shift, F2 test switch, 9 service, Esc menu (Debug: developer screens), F12 picture.
+#                   Pad: left stick steer, A gas, B brake, shoulders shift, Back coin, Start or R3 menu.
 # Cyber Sled keys:  5 coin, 1/Enter start, arrow keys drive, E/D/S/F + I/K/J/L the two levers, Z gun, X missile,
 #                   C view, F2 test switch, Esc menu (Online: play against a friend), F12 picture.
+
+# THE PLAY OPTIONS (GitHub #85): when every argument is one of these the game starts in its window with them -- a window-scale
+# number, --fullscreen, --set KEY=VALUE (any line of the game's settings file, this run only). Anything else passes to the program.
+play_args() {
+    SCALE=""; PARGS=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            [0-9]|[1-9][0-9]) SCALE=$1 ;;
+            --window) ;;
+            --fullscreen|--set=*) PARGS+=("$1") ;;
+            --set) [ $# -ge 2 ] || return 1; PARGS+=("$1" "$2"); shift ;;
+            *) return 1 ;;
+        esac
+        shift
+    done
+    return 0
+}
+
 set -e
 cd "$(dirname "$0")"
 
@@ -64,8 +89,8 @@ case "$game" in
         fi
         rebuild raverace rr
         cd raverace
-        if [ $# -eq 0 ] || [[ "$1" =~ ^[0-9]+$ ]]; then
-            exec ./build/rr extracted --window ${1:+"$1"}
+        if play_args "$@"; then
+            exec ./build/rr extracted --window $SCALE ${PARGS[@]+"${PARGS[@]}"}
         fi
         exec ./build/rr extracted "$@"
         ;;
@@ -75,8 +100,8 @@ case "$game" in
         fi
         rebuild tokyowar tw
         cd tokyowar
-        if [ $# -eq 0 ] || [[ "$1" =~ ^[0-9]+$ ]]; then
-            exec ./build/tw extracted --window ${1:+"$1"}
+        if play_args "$@"; then
+            exec ./build/tw extracted --window $SCALE ${PARGS[@]+"${PARGS[@]}"}
         fi
         exec ./build/tw extracted "$@"
         ;;
@@ -96,8 +121,8 @@ case "$game" in
             esac
         done
         set -- ${rest[@]+"${rest[@]}"}
-        if [ $# -eq 0 ] || [[ "$1" =~ ^[0-9]+$ ]]; then
-            exec ./build/dd extracted --window ${1:+"$1"} ${stage:+--stage "$stage"}
+        if play_args "$@"; then
+            exec ./build/dd extracted --window $SCALE ${PARGS[@]+"${PARGS[@]}"} ${stage:+--stage "$stage"}
         fi
         exec ./build/dd extracted "$@" ${stage:+--stage "$stage"}
         ;;
@@ -107,8 +132,8 @@ case "$game" in
         fi
         rebuild adillor am
         cd adillor
-        if [ $# -eq 0 ] || [[ "$1" =~ ^[0-9]+$ ]]; then
-            exec ./build/am extracted --window ${1:+"$1"}
+        if play_args "$@"; then
+            exec ./build/am extracted --window $SCALE ${PARGS[@]+"${PARGS[@]}"}
         fi
         exec ./build/am extracted "$@"
         ;;
@@ -118,8 +143,8 @@ case "$game" in
         fi
         rebuild timecris tc
         cd timecris
-        if [ $# -eq 0 ] || [[ "$1" =~ ^[0-9]+$ ]]; then
-            exec ./build/tc extracted --window ${1:+"$1"}
+        if play_args "$@"; then
+            exec ./build/tc extracted --window $SCALE ${PARGS[@]+"${PARGS[@]}"}
         fi
         exec ./build/tc extracted "$@"
         ;;
@@ -129,8 +154,8 @@ case "$game" in
         fi
         rebuild acedriver ad
         cd acedriver
-        if [ $# -eq 0 ] || [[ "$1" =~ ^[0-9]+$ ]]; then
-            exec ./build/ad extracted --window ${1:+"$1"}
+        if play_args "$@"; then
+            exec ./build/ad extracted --window $SCALE ${PARGS[@]+"${PARGS[@]}"}
         fi
         exec ./build/ad extracted "$@"
         ;;
@@ -140,10 +165,21 @@ case "$game" in
         fi
         rebuild cybrcomm cc
         cd cybrcomm
-        if [ $# -eq 0 ] || [[ "$1" =~ ^[0-9]+$ ]]; then
-            exec ./build/cc extracted --window ${1:+"$1"}
+        if play_args "$@"; then
+            exec ./build/cc extracted --window $SCALE ${PARGS[@]+"${PARGS[@]}"}
         fi
         exec ./build/cc extracted "$@"
+        ;;
+    r2|ridgera2|ridgeracer2|rr2)
+        if [ ! -f ridgera2/build/CMakeCache.txt ]; then
+            echo "Ridge Racer 2 is not built yet. Run:  ridgera2/build.sh /path/to/ridgera2.zip /path/to/namcoc74.zip"; exit 1
+        fi
+        rebuild ridgera2 r2
+        cd ridgera2
+        if play_args "$@"; then
+            exec ./build/r2 extracted --window $SCALE ${PARGS[@]+"${PARGS[@]}"}
+        fi
+        exec ./build/r2 extracted "$@"
         ;;
     cs|cybsled|cybersled)
         if [ ! -f cybsled/build/CMakeCache.txt ]; then
@@ -155,12 +191,12 @@ case "$game" in
             cmake --build cybsled/build --target cs21 -j1 >/dev/null
         fi
         cd cybsled
-        if [ $# -eq 0 ] || [[ "$1" =~ ^[0-9]+$ ]]; then
-            exec ./build/cs21 extracted --window ${1:+"$1"}
+        if play_args "$@"; then
+            exec ./build/cs21 extracted --window $SCALE ${PARGS[@]+"${PARGS[@]}"}
         fi
         exec ./build/cs21 extracted "$@"
         ;;
     *)
-        sed -n '2,35p' "$0" | sed 's/^# \?//'
+        sed -n '2,42p' "$0" | sed 's/^# \?//'
         ;;
 esac

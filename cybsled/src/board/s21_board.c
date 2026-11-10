@@ -326,3 +326,4 @@ void s21_board_quad_hooks(void (*quad)(const void *q), void (*swap)(void))
     s21_quad_out = (void (*)(const s21_quad *))quad;
     s21_swap_out = swap;
 }
+uint32_t s21_frame_no(void) { return g_s21.frame; }   /* for the video module's debug switches (src/video/s21_video.c) */

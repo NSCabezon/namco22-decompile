@@ -33,6 +33,7 @@ set(NAMCO22_ENGINE_SS22_HOST_SRC
     ${NAMCO22_ENGINE_DIR}/ss22_host.c
     ${NAMCO22_ENGINE_DIR}/ss22_out.c
     ${NAMCO22_ENGINE_DIR}/ss22_input.c
+    ${NAMCO22_ENGINE_DIR}/twin_stick.c
     ${NAMCO22_ENGINE_FFB_SRC}
     ${NAMCO22_ENGINE_DIR}/ss22_board.c
     ${NAMCO22_ENGINE_DIR}/ss22_link.c
@@ -50,6 +51,7 @@ set(NAMCO22_ENGINE_UI_SRC
     ${NAMCO22_ENGINE_DIR}/eng_cfg.c
     ${NAMCO22_ENGINE_DIR}/eng_display.c
     ${NAMCO22_ENGINE_DIR}/eng_ui.c
+    ${NAMCO22_ENGINE_DIR}/eng_crosshair.c
 )
 # ONLINE PLAY (docs/NETPLAY.md): the NMN2 client every game shares (net.c), the built-in LAN host (net_host.c) and the Online
 # menu page for the shared menu (eng_net_ui.c; needs NAMCO22_ENGINE_UI_SRC). A game supplies one eng_net_game (net.h).

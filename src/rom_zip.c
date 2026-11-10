@@ -21,10 +21,13 @@
 #include "rom_zip.h"
 
 /* opt = 1: extracted when the zip has it, never required (the master DSP's
- * BIOS -- without it the game falls back to its own scene expansion) */
-static const struct { const char *name; uint32_t size; int opt; } k_roms[] = {
-    {"pr2ver-a.1", 0x100000}, {"pr2ver-a.2", 0x100000},
-    {"pr2ver-a.3", 0x100000}, {"pr2ver-a.4", 0x100000},
+ * BIOS -- without it the game falls back to its own scene expansion).
+ * alt: the name another MAME version gives the same chip (same CRC), unpacked
+ * under `name` -- MAME 0.289 calls the program chips pr2vera.1..4, older sets
+ * pr2ver-a.1..4 (GitHub #65: a current set was "missing pr2vera.1"). */
+static const struct { const char *name; uint32_t size; int opt; const char *alt; } k_roms[] = {
+    {"pr2ver-a.1", 0x100000, 0, "pr2vera.1"}, {"pr2ver-a.2", 0x100000, 0, "pr2vera.2"},
+    {"pr2ver-a.3", 0x100000, 0, "pr2vera.3"}, {"pr2ver-a.4", 0x100000, 0, "pr2vera.4"},
     {"pr1ptrl0.18k", 0x80000}, {"pr1ptrl1.16k", 0x80000}, {"pr1ptrl2.15k", 0x80000},
     {"pr1ptrm0.18j", 0x80000}, {"pr1ptrm1.16j", 0x80000}, {"pr1ptrm2.15j", 0x80000},
     {"pr1ptru0.18f", 0x80000}, {"pr1ptru1.16f", 0x80000}, {"pr1ptru2.15f", 0x80000},
@@ -61,15 +64,16 @@ bool rom_dir_complete(const char *dir)
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
 static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
 
+static int name_is(const char *name, size_t len, const char *want)
+{
+    if (!want || strlen(want) != len) return 0;
+    for (size_t k = 0; k < len; k++) if (tolower((unsigned char)name[k]) != want[k]) return 0;
+    return 1;
+}
 static int rom_index(const char *name, size_t len)
 {
-    for (int i = 0; i < NROMS; i++) {
-        size_t n = strlen(k_roms[i].name);
-        if (n != len) continue;
-        size_t k = 0;
-        while (k < n && tolower((unsigned char)name[k]) == k_roms[i].name[k]) k++;
-        if (k == n) return i;
-    }
+    for (int i = 0; i < NROMS; i++)
+        if (name_is(name, len, k_roms[i].name) || name_is(name, len, k_roms[i].alt)) return i;
     return -1;
 }
 

@@ -16,12 +16,24 @@ typedef struct {
     const char *title;                            /* "Time Crisis 2": windows, messages */
     const char *tag;                              /* "tc2": the cfg / backup / log file names */
     const char *window_title;                     /* "Time Crisis II" */
+    int cz_fog;                                   /* 1 = draw the C412 depth fog (CZ flag + PCZ table, Super 22's model: src/tc2_render.c). Angler King on;
+                                                   * TC2 asks for it too (frame 3720's forest) but stays off until checked */
+    int uv_edge;                                  /* 1 = model polygons sample their texture range as written (no +0.5 texel, MAME's): a 128-texel tile
+                                                   * ends at 1024 EXCLUSIVE, so +0.5 reaches the next atlas tile on the far edges -- Angler King's water seams */
+    const char *subtitles;                        /* NULL, or the English subtitle table beside the game (src/tc2_subs.c): Angler King's captions are pictures */
     const char *mame_set;                         /* "timecrs2": the set name the output protocol announces (recoil hooks key on it) */
     const char *zip_help;                         /* what the player must supply, for the missing-ROM message */
     const char *const *zips; int nzips;           /* the MAME zips searched (a split set keeps a device ROM in its own zip) */
     const eng_rom_t *chips; int nchips;           /* every ROM file: name, size, CRC (src/eng/romzip.c) */
 
+    int twin;                                     /* 1 = a TWIN-CABINET game (Time Crisis 2: Left/Red + Right/Blue on the C422 RS-422 link): the menu's
+                                                   * Cabinet choice (the I/O board's Link ID) and online play (src/tc2_link.c) */
     int evo2;                                     /* 1 = System 23 EVOLUTION 2: the chips at +0x10000000, 29-bit decode, C450 DMA, IRQ status regs */
+    int io_asca3;                                 /* 1 = the I/O board is an ASCA-3 / FCA-1 (MAME namco_asca_3_device; Angler King's namco_fca10 is one with its
+                                                   * undumped MB90F574 held in reset): switches 0x6000-3 (ASCA-1 layout), outputs 0x6004/5, the rotary
+                                                   * encoders' differences 0x6006/7, the analogue inputs on the H8's A/D (src/tc2_h8.c). 0 = Time Crisis 2's gun board */
+    int super23;                                  /* 1 = SUPER System 23 (MAME 0.289 namcoss23_state: Angler King): a write to 0x0100005C acknowledges the C361
+                                                   * (raster) interrupt (c435_c361_ack_w) -- the game's IP3 handler does it, it never reads 0x0682000A/C */
     uint32_t clock;                               /* the main CPU, Hz (cycles as MAME charges them) */
     uint32_t px_num, px_den;                      /* pixel clocks (25.6 MHz) per main cycle, exactly */
     uint32_t sub_div;                             /* main cycles per sub-CPU (H8/3002) state */
@@ -56,6 +68,10 @@ typedef struct {
     int recoil_hold;                              /* 1 = 0x6002 bit 0 stays on WHILE the gun fires (Crisis Zone's machine gun: measured on a player's
                                                    * session, on for the whole burst), 0 = a 3-frame pulse per shot (Time Crisis 2) */
     int io_analog_out;                            /* 1 = the I/O board has MAME's namco_csz1 analog output at 0x6003 (Crisis Zone): published as analog0 */
+    /* the SPEECH, on its own gain (Audio > Voice volume, GitHub #46): a C352 voice in speech_voices, or a key-on from a sample bank in
+     * speech_bank_lo..speech_bank_hi (hi 0 = no range), is mixed as speech. Measured per game with C352_KEYLOG on a recorded session */
+    uint32_t speech_voices;
+    uint8_t speech_bank_lo, speech_bank_hi;
 } tc2_game_t;
 
 extern const tc2_game_t tc2_game;                 /* the one this binary was built for */

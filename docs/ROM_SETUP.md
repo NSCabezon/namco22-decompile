@@ -170,6 +170,20 @@ It checks all 29 chip files by name, size and CRC and copies them into `cybrcomm
 `cy1prguu.6d` .. `cy1prgll.4d`, interleaved into `cybrcomm_main.bin`. The installed packages and the Windows version do this themselves
 the first time the game starts, from the two zips in the game's `roms` folder. Compare your files with [ROM_CHECKSUMS.md](ROM_CHECKSUMS.md).
 
+## Ridge Racer 2
+
+Ridge Racer 2 needs two MAME sets: `ridgera2.zip` (Ridge Racer 2, World RRS2) and `namcoc74.zip` (the sound CPU's BIOS, `c74.bin` --
+the same file Rave Racer, Ace Driver and Cyber Commando use). It is the same board as Ace Driver and uses Ace Driver's unpacker:
+
+```bash
+ridgera2/build.sh /path/to/ridgera2.zip /path/to/namcoc74.zip
+# (it runs: python3 acedriver/tools/setup_roms.py --game ridgera2 <zips>)
+```
+
+It checks all 25 chip files by name, size and CRC and copies them into `ridgera2/extracted/`; the 68020 program is the four chips
+`rrs2_prguu.6d` .. `rrs2_prgll.4d`, interleaved into `ridgera2_main.bin`. The installed packages and the Windows version do this themselves
+the first time the game starts, from the two zips in the game's `roms` folder. Compare your files with [ROM_CHECKSUMS.md](ROM_CHECKSUMS.md).
+
 ## Cyber Sled
 
 Cyber Sled (Namco System 21) needs three MAME sets: `cybsled.zip` (Cyber Sled, World CY2), `namcoc67.zip` (`c67.bin`, the internal
@@ -183,3 +197,44 @@ It checks all 30 chip files by name, size and CRC and copies them into `cybsled/
 `cy2-mpr-u.3j` / `cy2-mpr-l.1j` (master) and `cy2-spr-u.6c` / `cy2-spr-l.4c` (slave). The installed packages and the Windows version
 do this themselves the first time the game starts, from the three zips in the game's `roms` folder. The first build compiles the two
 68000 programs one at a time (about 3 GB of RAM for the larger). Compare your files with [ROM_CHECKSUMS.md](ROM_CHECKSUMS.md).
+
+## Time Crisis II
+
+Time Crisis II (Namco System 23) needs one MAME set: `timecrs2.zip` (US, TSS3 Ver.B). Give it to the build script:
+
+```bash
+tc2/build.sh /path/to/timecrs2.zip
+```
+
+It checks all 22 chip files by name, size and CRC and copies them into `tc2/extracted/`; the MIPS program is `tss3verb.1` / `tss3verb.2`.
+The installed packages and the Windows version do this themselves the first time the game starts, from `timecrs2.zip` in the game's
+`roms` folder. Compare your files with [ROM_CHECKSUMS.md](ROM_CHECKSUMS.md).
+
+## Crisis Zone
+
+Crisis Zone (Namco System 23 Evolution 2) needs one MAME set: `crszone.zip` (World, CSZO4 Ver.B). Give it to the build script:
+
+```bash
+crszone/build.sh /path/to/crszone.zip
+```
+
+It checks all 23 chip files by name, size and CRC and copies them into `crszone/extracted/`; the MIPS program is `cszo4verb.ic4`. If your
+MAME set keeps the I/O board's program `csz1prg0a.8f` in a separate `namco_csz1.zip`, put that zip beside `crszone.zip` (or give both to
+the script). The installed packages and the Windows version do this themselves the first time the game starts, from the zips in the
+game's `roms` folder. Compare your files with [ROM_CHECKSUMS.md](ROM_CHECKSUMS.md).
+
+## Angler King
+
+Angler King (Namco Super System 23) needs MAME's `aking.zip` (Japan, AG1 Ver.A). Current MAME sets keep the I/O board's ROM in a
+separate device zip, `namco_fca10.zip`, so give that too if you have it:
+
+```bash
+aking/build.sh /path/to/aking.zip /path/to/namco_fca10.zip
+```
+
+It checks all 24 chip files by name, size and CRC and copies them into `aking/extracted/`; the MIPS program is `ag1vera.ic1` / `ag1vera.ic2`.
+The I/O board's program is either `asc3_io-c1.ic14`, which older sets carry inside `aking.zip` (or `500gp.zip`), or `asc3_io-c.ic14`,
+which current sets carry in `namco_fca10.zip`. Both work; [ROM_CHECKSUMS.md](ROM_CHECKSUMS.md) explains the difference. The installed
+packages and the Windows version do this themselves the first time the game starts, from the zips in the game's `roms` folder:
+`aking.zip`, `namco_fca10.zip`, `500gp.zip`, or a download named `Angler King*.zip` that holds those zips. Compare your files with
+[ROM_CHECKSUMS.md](ROM_CHECKSUMS.md).

@@ -32,6 +32,24 @@ Hook Of The Reaper can drive a recoil gun; a pad rumbles instead. MAME does not 
 Reaper needs the game file in the hotr folder: copy hotr/timecrs2.txt into its defaultLG folder (hotr/README.txt says more).
 Display > Recoil outputs / Pad rumble on recoil turn each on or off.
 
+YOUR OWN CROSSHAIR: put PNG pictures in a "crosshairs" folder next to the game (or one named crosshair.png) and pick one in
+Display > Crosshair image ("built-in" is the game's own cross). 8 bits per channel (grey, RGB, RGBA or palette; transparency kept),
+not interlaced, at most 256 x 256; drawn at its own size on a 1080-line screen, so 64 x 64 is about the built-in cross's size.
+
+TWO PLAYERS ON ONE COMPUTER (the arcade's LINK PLAY, two light guns)
+--------------------------------------------------------------------
+  1. Esc > Online > "Second player on this computer". A second copy of the game opens (two monitors: one each; one monitor:
+     side by side), joins the first over the LAN, and the game starts by itself once both are in. Player 1 is Left/Red
+     (Richard), player 2 is Right/Blue (Keith).
+  2. Each copy must read ITS OWN gun: Esc > Controls > "Gun device" lists every mouse and gun (move one and it says "<- moving");
+     pick one in each window. The first copy's choice is remembered; the second copy takes the first other gun it finds (its own
+     settings live in tc2_2.cfg, so its choice is remembered too). Without a choice a copy reads the system pointer, which every
+     gun moves at once.
+     Linux: reading a gun directly needs permission for /dev/input: sudo usermod -aG input $USER, then log out and in.
+     "Gun mapping": what the gun's full range covers -- the whole desktop (the usual), the window's monitor, or the window.
+  3. Put a coin in each window (5), choose LINKED on the game's own screen, and shoot. (./launch.sh --2p does step 1 from a shell.)
+  Two copies on two computers on one LAN: "Host a LAN game" on one, "Find LAN games" and Join on the other, Ready, Start.
+
 Settings are kept in tc2.cfg, the machine's settings, bookkeeping and rankings in tc2_backup.nv (the arcade board's battery RAM),
 both in the game's folder (Windows: next to the .exe; Linux: ~/.local/share/tc2/). The log of the last start is tc2.log there.
 

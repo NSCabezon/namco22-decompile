@@ -22,11 +22,21 @@
 #include "rr_link.h"
 #include "rr_hw.h"
 #include "rr_ui.h"
+#include "rr_input.h"
 
 #define WIRE_PKT 40                              /* the 38-byte link packet + 2 zero fill bytes (RRN1's FRAME packet) */
 
 static int cab_reapply;                          /* frames left re-poking the cabinet number */
 static int my_slot = -1;
+/* a player who has not picked a car (Controls > Car, rr_game_t.cars) races in a different one per lobby slot, so two cabinets are not
+ * both car 1; their own setting comes back when the session ends */
+static int car_saved = -1;
+static void session_car(void)
+{
+    if (!g_rr_game->car_set || g_rr_game->ncars <= 0 || g_cfg_car >= 0) return;
+    if (car_saved < 0) car_saved = g_rr_game->car_get ? g_rr_game->car_get() : 0;
+    g_rr_game->car_set(my_slot % g_rr_game->ncars);
+}
 
 /* ONLINE PLAY NEEDS NO COINS AND GIVES EVERYONE TIME: GO turns free play on (the cabinet's own setting comes back when the
  * session ends) and opens a 20 s window in which each player steps on the gas themselves -- what takes the game from attract
@@ -76,18 +86,34 @@ static void session_begin(int slot, int players)
     cab_reapply = 360;
     rr_link_net_active(true);                    /* session: we own the link TX queue, loopback yields */
     session_free_play(true);
+    session_car();
     wait_left = GAS_WAIT_FRAMES; gas_left = 0;
 }
 static void session_end(void)
 {
     session_free_play(false);
+    if (car_saved >= 0 && g_rr_game->car_set) { g_rr_game->car_set(car_saved); car_saved = -1; }
     rr_link_net_active(false);
 }
 static uint32_t n_staged_warn;
 static int frame_out(uint8_t *buf)
 {
-    if (cab_reapply > 0) { rr_hw_set_link_cabinet(my_slot); cab_reapply--; }
+    if (cab_reapply > 0) {                       /* the boot-time settings load may still be ahead of us: it would undo both */
+        rr_hw_set_link_cabinet(my_slot);
+        if (fp_saved >= 0 && !rr_hw_freeplay()) rr_hw_set_freeplay(true);
+        if (car_saved >= 0) session_car();
+        cab_reapply--;
+    }
     rr_link_pkt_t p;
+    if (g_rr_game->link_ring) {                  /* a ring (rr_game.h link_ring): our NEWEST own frame, echoed to ourselves; relays stay home */
+        rr_link_pkt_t q; bool got = false;
+        while (rr_link_tx_pop(&q)) if (q.id == my_slot) { p = q; got = true; }
+        if (!got) return 0;
+        rr_link_rx_push(&p);
+        memcpy(buf, p.data, RR_LINK_PKT_LEN);
+        memset(buf + RR_LINK_PKT_LEN, 0, WIRE_PKT - RR_LINK_PKT_LEN);
+        return 1;
+    }
     if (!(rr_link_net_legacy() ? rr_link_tx_pop(&p) : rr_link_tx_pop_latest(&p))) return 0;   /* RR_NET_LEGACY=1: the oldest, as before (A/B) */
     if (p.id != my_slot && n_staged_warn++ % 60 == 0) { const char *e = getenv("RR_NET_DEBUG"); if (e && *e == '1') fprintf(stderr, "[NET] staged id %d != slot %d\n", p.id, my_slot); }
     memcpy(buf, p.data, RR_LINK_PKT_LEN);

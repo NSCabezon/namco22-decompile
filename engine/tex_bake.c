@@ -1197,6 +1197,7 @@ static int      in_pump;
 static double   g_budget_ms;
 static double   frame_bake_t0;                   /* now_ns() at this frame's bake start (set before the pump) */
 static int budget_time_left(void) { return g_budget_ms <= 0.0 || (now_ns() - frame_bake_t0) < g_budget_ms * 1e6; }
+int g_tex_budget_paused;
 int tex_tier_fallbacks;                          /* over budget, a cached OTHER size tier of the same texture was drawn instead (cumulative) */
 int tex_placeholders, tex_refined;              /* placeholders served / refined to full quality (cumulative, for the perf logs) */
 typedef struct { uint16_t min_u, min_v, range_u, range_v; uint8_t texbank, pal_group, cmode; int cap_req, opaque; } PendingBake;
@@ -1261,8 +1262,10 @@ GLuint bake_quad_texture(int min_u, int min_v, int range_u, int range_v,
             g_tex_bake_cap_req = req;
         }
     }
-    if (g_budget_draw <= 0 || in_pump) return bake_impl(min_u, min_v, range_u, range_v, texbank, pal_group, cmode, out_su, out_sv, out_ou, out_ov, 0, 0);
+    if (g_budget_draw <= 0 || in_pump || g_tex_budget_paused) return bake_impl(min_u, min_v, range_u, range_v, texbank, pal_group, cmode, out_su, out_sv, out_ou, out_ov, 0, 0);
     if (budget_frame != g_eng_frame) {                      /* a new shown frame: a fresh budget, and the refinement of what earlier frames coarsened */
+        static FILE *blog; static int blog_init; if (!blog_init) { blog_init = 1; const char *e = getenv("ENG_TEX_BUDGETLOG"); if (e) blog = fopen(e, "w"); }
+        if (blog && frame_spent > 0) fprintf(blog, "texbudget f%u baked %.0f texels, %.2f ns/texel\n", budget_frame, frame_spent, ns_per_texel), fflush(blog);
         budget_frame = g_eng_frame; frame_spent = 0;
         frame_bake_t0 = now_ns();                           /* the per-frame bake TIME cap (ENG_TEX_BUDGET_MS) covers the pump + this frame's bakes */
         if (g_budget_pump > 0) budget_pump(); else pend_n = 0;

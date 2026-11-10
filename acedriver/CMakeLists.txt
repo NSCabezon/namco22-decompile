@@ -67,7 +67,7 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/gen/snd_driver.c
   COMMAND ${CMAKE_COMMAND} -E env SND_DATA=ad1data.6r SND_RAMCODE=BB00:BDD2:BA7D SND_UPLOAD=none
           ${Python3_EXECUTABLE} ${RR}/tools/gen/snd_translate.py tools/gen/snd.cov
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-  DEPENDS ${RR}/tools/gen/snd_translate.py ${RR}/tools/gen/m7700_decode.py ${RR}/tools/gen/snd_rom.py ../tools/gen/snd_spin.inc tools/gen/snd.cov
+  DEPENDS ${RR}/tools/gen/snd_translate.py ${RR}/tools/gen/m7700_decode.py ${RR}/tools/gen/snd_rom.py ${RR}/tools/gen/c74_bios.cov ../tools/gen/snd_spin.inc ../tools/gen/snd_dispatch.py ../tools/gen/snd_indirect.py ../tools/gen/snd_exits.py tools/gen/snd.cov
   COMMENT "translating Ace Driver's sound program")
 set_source_files_properties(gen/snd_driver.c PROPERTIES COMPILE_OPTIONS "-O1;-w")
 
@@ -75,7 +75,7 @@ set_source_files_properties(gen/snd_driver.c PROPERTIES COMPILE_OPTIONS "-O1;-w"
 set(AD_CORE ${RR}/src/rr_romzip.c ${NAMCO22_ENGINE_DIR}/romzip.c ${RR}/src/rr_main.c ${NAMCO22_ENGINE_LIFT_SRC}
     ${RR}/src/rr_mem.c ${RR}/src/rr_hw.c ${RR}/src/rr_env.c src/ad_game.c ${RR}/src/rr_link.c ${RR}/src/rr_net.c ${NAMCO22_ENGINE_NET_SRC} ${RR}/src/rr_dsp.c
     ${NAMCO22_ENGINE_C25_SRC} gen/rr_c25.c ${RR}/src/rr_scene.c ${RR}/src/rr_gl.c ${NAMCO22_ENGINE_GL_SRC}
-    ${RR}/src/rr_host.c ${RR}/src/rr_ui.c ${RR}/src/rr_input.c ${NAMCO22_ENGINE_FFB_SRC} ${RR}/src/rr_audio.c ${NAMCO22_ENGINE_SND_SRC}
+    ${RR}/src/rr_host.c ${RR}/src/rr_ui.c ${RR}/src/rr_input.c ${NAMCO22_ENGINE_DIR}/twin_stick.c ${NAMCO22_ENGINE_FFB_SRC} ${RR}/src/rr_audio.c ${NAMCO22_ENGINE_SND_SRC}
     ${RR}/src/snd/snd_board.c gen/rr_lifted.c ${AD_RD})
 
 # THE GAME: the lifted 68K, the translated master DSP and sound programs, the shared engine. No interpreter of any kind

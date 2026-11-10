@@ -4,6 +4,9 @@
 #   ./launch.sh 2                at 2x
 #   ./launch.sh --fullscreen
 #   ./launch.sh --headless N     no window: N frames, screenshots every 300 frames into work/run/shots, the sound into work/run/tc2.wav
+#   ./launch.sh --2p             TWO PLAYERS ON THIS COMPUTER: this copy hosts a LAN game and starts a second copy that joins it (the
+#                                arcade's LINK PLAY); two monitors = one each, one monitor = side by side. Each copy reads its own
+#                                light gun: Controls > Gun device (TC2_GUN_DEVICE=<n or name> picks this copy's for the run)
 # Needs the ROM files unpacked in extracted/ (MAME's timecrs2 set). Keys: 5 coin, Space / left mouse trigger, Z / right mouse pedal,
 # F2 test, 9 service; the mouse (or a pad's stick) aims, off-screen = reload.
 cd "$(dirname "$(readlink -f "$0")")" || exit 1
@@ -16,6 +19,7 @@ if [ "$1" = "--headless" ]; then
     n=${2:-1800}; mkdir -p work/run/shots
     TC2_SHOTS=work/run/shots:300 TC2_WAV=work/run/tc2.wav exec build/tc2 reset $((n * 2830000))
 fi
+if [ "$1" = "--2p" ]; then shift; export TC2_LOCAL2P=1; fi
 # a Wayland desktop session started from a plain shell
 [ -z "$WAYLAND_DISPLAY" ] && [ -z "$DISPLAY" ] && [ -S /run/user/$(id -u)/wayland-0 ] && export WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/$(id -u)
 exec build/tc2 --window "$@"

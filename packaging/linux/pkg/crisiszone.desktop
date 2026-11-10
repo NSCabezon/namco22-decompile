@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Crisis Zone
+Comment=Namco's 1999 arcade light-gun shooter Crisis Zone (decompiled engine)
+Exec=crisiszone
+Icon=crisiszone
+Terminal=false
+Categories=Game;ArcadeGame;

@@ -68,8 +68,13 @@ def successors(pc, mx):
         return []                                        # indirect: needs coverage
     if mn in ('JSR', 'JSL'):
         out = [(nxt, mx)]
-        if ea == 'A': out.append((bank | int.from_bytes(b[1:3], 'little'), mx))
-        if ea == 'AL': out.append((int.from_bytes(b[1:4], 'little'), mx))
+        tgt = None
+        if ea == 'A': tgt = bank | int.from_bytes(b[1:3], 'little')
+        if ea == 'AL': tgt = int.from_bytes(b[1:4], 'little')
+        if tgt is not None:
+            out.append((tgt, mx))
+            if not os.environ.get('SND_NO_EXITS'):          # the return point also in every M/X the callee can RETURN with (tools/gen/snd_exits.py, GitHub #62)
+                out += [(nxt, m) for m in sorted(_exits(tgt, mx, 'RTS' if mn == 'JSR' else 'RTL')) if m != mx]
         return out
     return [(nxt, mx)]
 
@@ -81,16 +86,35 @@ for i in range(0, 0x30, 2):
     if 0xC000 <= t < 0x10000:
         for mx in range(4):
             if mx not in ins[t]: ins[t][mx] = decode(source(t, 6)[0], mx)[2]
+from snd_exits import Exits, plp_seeds
+_exits = Exits(source, decode, successors)
 work = [(pc, mx) for pc in ins for mx in ins[pc]]
 seen = set(work)
-while work and len(seen) < 60000:
-    pc, mx = work.pop()
-    for t in successors(pc, mx):
-        if t in seen: continue
-        b, _ = source(t[0], 6)
-        if b is None: continue                          # not ROM-backed (e.g. data RAM): no static code there
-        seen.add(t); work.append(t)
-        ins[t[0]][t[1]] = decode(b, t[1])[2]
+def _walk():
+    while work and len(seen) < 60000:
+        pc, mx = work.pop()
+        for t in successors(pc, mx):
+            if t in seen: continue
+            b, _ = source(t[0], 6)
+            if b is None: continue                      # not ROM-backed (e.g. data RAM): no static code there
+            seen.add(t); work.append(t)
+            ins[t[0]][t[1]] = decode(b, t[1])[2]
+# push-and-RTS dispatch tables (tools/gen/snd_dispatch.py, GitHub #62): their handlers, then walk on from them, until nothing new
+# and the code pointers kept in RAM (tools/gen/snd_indirect.py, GitHub #62): the targets of the indirect jumps that read them
+from snd_dispatch import dispatch_seeds
+from snd_indirect import indirect_seeds
+_walk()
+while not os.environ.get('SND_NO_DISPATCH'):                # SND_NO_DISPATCH=1: without the tables, for A/B
+    _cand = set(dispatch_seeds(ins, source, decode))
+    if not os.environ.get('SND_NO_INDIRECT'):               # SND_NO_INDIRECT=1: without the RAM pointers, for A/B
+        _cand |= indirect_seeds(ins, source, decode, _exits)
+    if not os.environ.get('SND_NO_PLP'):                    # SND_NO_PLP=1: without the flags a PLP restores, for A/B (GitHub #95)
+        _cand |= plp_seeds(ins, source, decode)
+    _new = [t for t in _cand if t not in seen and source(t[0], 6)[0] is not None]
+    if not _new: break
+    for t in _new:
+        seen.add(t); work.append(t); ins[t[0]][t[1]] = decode(source(t[0], 6)[0], t[1])[2]
+    _walk()
 static = sum(len(v) for v in ins.values()) - covered
 
 # READABLE ROUTINES (src/snd/snd_engine.c): an `SND_ENTRY(0xADDR, name, MAXCYC)`

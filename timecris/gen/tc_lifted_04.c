@@ -7,130 +7,6 @@ int rd_hook(uint32_t ep);
 extern int rd_stop_on;
 int rd_jump_stop(uint32_t t, uint32_t at);   /* src/rd: stop a checked run at its tail jump */
 
-/* ---- FUN_0003adae @ 0x03ADAE ---- */
-void L_3ADAE_at(uint32_t pc_)
-{
-  uint64_t uf200 = 0;
-  uint64_t uf300 = 0;
-  uint64_t u10400 = 0;
-  uint64_t u10500 = 0;
-  uint64_t u11b00 = 0;
-  uint64_t u11c00 = 0;
-  uint64_t u49a00 = 0;
-  uint64_t u49b00 = 0;
-  uint64_t u49c00 = 0;
-  if (pc_ == 0x3ADAEU && rd_on && rd_hook(0x3ADAEU)) return;
-resume_:
-  switch (pc_) {
-  case 0x3ADAEU: goto A_3ADAE;
-  case 0x3ADB4U: goto A_3ADB4;
-  case 0x3ADBCU: goto A_3ADBC;
-  case 0x3ADC2U: goto A_3ADC2;
-  case 0x3ADC8U: goto A_3ADC8;
-  default: rr_jump(pc_, pc_); return;   /* another function owns it */
-  }
-A_3ADAE: RR_INS(0x3ADAEU); /* move.b #0x4,(0xcd,A5) */
-  P_3ADAE_0: u49a00 = (0x4ULL) & 0xFFULL;
-  P_3ADAE_1: u11b00 = (RG4(0x34) + 0xCDULL) & 0xFFFFFFFFULL;
-  P_3ADAE_2: u11c00 = ((u49a00 & 0xFFULL)) & 0xFFULL;
-  P_3ADAE_3: MWR1((uint32_t)(u11b00 & 0xFFFFFFFFULL), (u11c00 & 0xFFULL));
-  P_3ADAE_4: RS1(0x44, (SX1((u49a00 & 0xFFULL)) < SX1(0x0ULL)));
-  P_3ADAE_5: RS1(0x45, ((u49a00 & 0xFFULL) == 0x0ULL));
-  P_3ADAE_6: RS1(0x46, 0x0ULL);
-  P_3ADAE_7: RS1(0x47, 0x0ULL);
-  A_END_3ADAE: ;
-A_3ADB4: RR_INS(0x3ADB4U); /* move.l #0x3adce,(0xb0,A5) */
-  P_3ADB4_0: u49c00 = (0x3ADCEULL) & 0xFFFFFFFFULL;
-  P_3ADB4_1: uf200 = (RG4(0x34) + 0xB0ULL) & 0xFFFFFFFFULL;
-  P_3ADB4_2: uf300 = ((u49c00 & 0xFFFFFFFFULL)) & 0xFFFFFFFFULL;
-  P_3ADB4_3: MWR4((uint32_t)(uf200 & 0xFFFFFFFFULL), (uf300 & 0xFFFFFFFFULL));
-  P_3ADB4_4: RS1(0x44, (SX4((u49c00 & 0xFFFFFFFFULL)) < SX4(0x0ULL)));
-  P_3ADB4_5: RS1(0x45, ((u49c00 & 0xFFFFFFFFULL) == 0x0ULL));
-  P_3ADB4_6: RS1(0x46, 0x0ULL);
-  P_3ADB4_7: RS1(0x47, 0x0ULL);
-  A_END_3ADB4: ;
-A_3ADBC: RR_INS(0x3ADBCU); /* move.w #0x1,(0x48,A5) */
-  P_3ADBC_0: u49b00 = (0x1ULL) & 0xFFFFULL;
-  P_3ADBC_1: u10400 = (RG4(0x34) + 0x48ULL) & 0xFFFFFFFFULL;
-  P_3ADBC_2: u10500 = ((u49b00 & 0xFFFFULL)) & 0xFFFFULL;
-  P_3ADBC_3: MWR2((uint32_t)(u10400 & 0xFFFFFFFFULL), (u10500 & 0xFFFFULL));
-  P_3ADBC_4: RS1(0x44, (SX2((u49b00 & 0xFFFFULL)) < SX2(0x0ULL)));
-  P_3ADBC_5: RS1(0x45, ((u49b00 & 0xFFFFULL) == 0x0ULL));
-  P_3ADBC_6: RS1(0x46, 0x0ULL);
-  P_3ADBC_7: RS1(0x47, 0x0ULL);
-  A_END_3ADBC: ;
-A_3ADC2: RR_INS(0x3ADC2U); /* lea (0x2ef548).l,A0 */
-  P_3ADC2_0: RS4(0x20, 0x2EF548ULL);
-  A_END_3ADC2: ;
-A_3ADC8: RR_INS(0x3ADC8U); /* bra.l 0x00003ad0 */
-  P_3ADC8_0: { RR_POLL(); if (rd_stop_on && rd_jump_stop(0x3AD0U, 0x3ADC8U)) return; L_3AD0(); return; }
-  A_END_3ADC8: ;
-  if (rd_stop_on && rd_jump_stop(0x3ADCEU, 0x3ADC8U)) return;
-  L_3ADCE(); return;
-}
-
-/* ---- FUN_0003adce @ 0x03ADCE ---- */
-void L_3ADCE_at(uint32_t pc_)
-{
-  uint64_t uf200 = 0;
-  uint64_t uf300 = 0;
-  uint64_t u10400 = 0;
-  uint64_t u10500 = 0;
-  uint64_t u11b00 = 0;
-  uint64_t u11c00 = 0;
-  uint64_t u49a00 = 0;
-  uint64_t u49b00 = 0;
-  uint64_t u49c00 = 0;
-  if (pc_ == 0x3ADCEU && rd_on && rd_hook(0x3ADCEU)) return;
-resume_:
-  switch (pc_) {
-  case 0x3ADCEU: goto A_3ADCE;
-  case 0x3ADD4U: goto A_3ADD4;
-  case 0x3ADDCU: goto A_3ADDC;
-  case 0x3ADE2U: goto A_3ADE2;
-  case 0x3ADE8U: goto A_3ADE8;
-  default: rr_jump(pc_, pc_); return;   /* another function owns it */
-  }
-A_3ADCE: RR_INS(0x3ADCEU); /* move.b #0x4,(0xcd,A5) */
-  P_3ADCE_0: u49a00 = (0x4ULL) & 0xFFULL;
-  P_3ADCE_1: u11b00 = (RG4(0x34) + 0xCDULL) & 0xFFFFFFFFULL;
-  P_3ADCE_2: u11c00 = ((u49a00 & 0xFFULL)) & 0xFFULL;
-  P_3ADCE_3: MWR1((uint32_t)(u11b00 & 0xFFFFFFFFULL), (u11c00 & 0xFFULL));
-  P_3ADCE_4: RS1(0x44, (SX1((u49a00 & 0xFFULL)) < SX1(0x0ULL)));
-  P_3ADCE_5: RS1(0x45, ((u49a00 & 0xFFULL) == 0x0ULL));
-  P_3ADCE_6: RS1(0x46, 0x0ULL);
-  P_3ADCE_7: RS1(0x47, 0x0ULL);
-  A_END_3ADCE: ;
-A_3ADD4: RR_INS(0x3ADD4U); /* move.l #0x3adee,(0xb0,A5) */
-  P_3ADD4_0: u49c00 = (0x3ADEEULL) & 0xFFFFFFFFULL;
-  P_3ADD4_1: uf200 = (RG4(0x34) + 0xB0ULL) & 0xFFFFFFFFULL;
-  P_3ADD4_2: uf300 = ((u49c00 & 0xFFFFFFFFULL)) & 0xFFFFFFFFULL;
-  P_3ADD4_3: MWR4((uint32_t)(uf200 & 0xFFFFFFFFULL), (uf300 & 0xFFFFFFFFULL));
-  P_3ADD4_4: RS1(0x44, (SX4((u49c00 & 0xFFFFFFFFULL)) < SX4(0x0ULL)));
-  P_3ADD4_5: RS1(0x45, ((u49c00 & 0xFFFFFFFFULL) == 0x0ULL));
-  P_3ADD4_6: RS1(0x46, 0x0ULL);
-  P_3ADD4_7: RS1(0x47, 0x0ULL);
-  A_END_3ADD4: ;
-A_3ADDC: RR_INS(0x3ADDCU); /* move.w #0x1,(0x48,A5) */
-  P_3ADDC_0: u49b00 = (0x1ULL) & 0xFFFFULL;
-  P_3ADDC_1: u10400 = (RG4(0x34) + 0x48ULL) & 0xFFFFFFFFULL;
-  P_3ADDC_2: u10500 = ((u49b00 & 0xFFFFULL)) & 0xFFFFULL;
-  P_3ADDC_3: MWR2((uint32_t)(u10400 & 0xFFFFFFFFULL), (u10500 & 0xFFFFULL));
-  P_3ADDC_4: RS1(0x44, (SX2((u49b00 & 0xFFFFULL)) < SX2(0x0ULL)));
-  P_3ADDC_5: RS1(0x45, ((u49b00 & 0xFFFFULL) == 0x0ULL));
-  P_3ADDC_6: RS1(0x46, 0x0ULL);
-  P_3ADDC_7: RS1(0x47, 0x0ULL);
-  A_END_3ADDC: ;
-A_3ADE2: RR_INS(0x3ADE2U); /* lea (0x2ef548).l,A0 */
-  P_3ADE2_0: RS4(0x20, 0x2EF548ULL);
-  A_END_3ADE2: ;
-A_3ADE8: RR_INS(0x3ADE8U); /* bra.l 0x00003ad0 */
-  P_3ADE8_0: { RR_POLL(); if (rd_stop_on && rd_jump_stop(0x3AD0U, 0x3ADE8U)) return; L_3AD0(); return; }
-  A_END_3ADE8: ;
-  if (rd_stop_on && rd_jump_stop(0x3ADEEU, 0x3ADE8U)) return;
-  L_3ADEE(); return;
-}
-
 /* ---- FUN_0003adee @ 0x03ADEE ---- */
 void L_3ADEE_at(uint32_t pc_)
 {
@@ -157068,7 +156944,24 @@ A_50AB2: RR_INS(0x50AB2U); /* move.l #0x50ac0,(0xb0,A5) */
 A_50ABA: RR_INS(0x50ABAU); /* bra.l 0x0000450e */
   P_50ABA_0: { RR_POLL(); if (rd_stop_on && rd_jump_stop(0x450EU, 0x50ABAU)) return; L_450E(); return; }
   A_END_50ABA: ;
-  rr_trap(0x50AACU, 0x50AC0U, "fell off function end");
+  if (rd_stop_on && rd_jump_stop(0x50AC0U, 0x50ABAU)) return;
+  L_50AC0(); return;
+}
+
+/* ---- thunk_FUN_00050a98 @ 0x050AC0 ---- */
+void L_50AC0_at(uint32_t pc_)
+{
+  if (pc_ == 0x50AC0U && rd_on && rd_hook(0x50AC0U)) return;
+resume_:
+  switch (pc_) {
+  case 0x50AC0U: goto A_50AC0;
+  default: rr_jump(pc_, pc_); return;   /* another function owns it */
+  }
+A_50AC0: RR_INS(0x50AC0U); /* bra.b 0x00050a98 */
+  P_50AC0_0: { RR_POLL(); if (rd_stop_on && rd_jump_stop(0x50A98U, 0x50AC0U)) return; L_50A98(); return; }
+  A_END_50AC0: ;
+  if (rd_stop_on && rd_jump_stop(0x50AC2U, 0x50AC0U)) return;
+  L_50AC2(); return;
 }
 
 /* ---- FUN_00050ac2 @ 0x050AC2 ---- */
@@ -169972,5 +169865,174 @@ A_524E4: RR_INS(0x524E4U); /* rts */
   A_END_524E4: ;
   if (rd_stop_on && rd_jump_stop(0x524E6U, 0x524E4U)) return;
   L_524E6(); return;
+}
+
+/* ---- FUN_000524e6 @ 0x0524E6 ---- */
+void L_524E6_at(uint32_t pc_)
+{
+  uint64_t u9300 = 0;
+  uint64_t u9400 = 0;
+  uint64_t ua500 = 0;
+  uint64_t ua600 = 0;
+  uint64_t uf200 = 0;
+  uint64_t uf300 = 0;
+  uint64_t u10400 = 0;
+  uint64_t u10500 = 0;
+  uint64_t u49b00 = 0;
+  uint64_t u49c00 = 0;
+  if (pc_ == 0x524E6U && rd_on && rd_hook(0x524E6U)) return;
+resume_:
+  switch (pc_) {
+  case 0x524E6U: goto A_524E6;
+  case 0x524EEU: goto A_524EE;
+  case 0x524F2U: goto A_524F2;
+  case 0x524FAU: goto A_524FA;
+  case 0x524FEU: goto A_524FE;
+  case 0x52504U: goto A_52504;
+  case 0x52508U: goto A_52508;
+  case 0x52510U: goto A_52510;
+  case 0x52516U: goto A_52516;
+  default: rr_jump(pc_, pc_); return;   /* another function owns it */
+  }
+A_524E6: RR_INS(0x524E6U); /* move.l #-0xb41cc,(0x20,A5) */
+  P_524E6_0: u49c00 = (0xFFF4BE34ULL) & 0xFFFFFFFFULL;
+  P_524E6_1: uf200 = (RG4(0x34) + 0x20ULL) & 0xFFFFFFFFULL;
+  P_524E6_2: uf300 = ((u49c00 & 0xFFFFFFFFULL)) & 0xFFFFFFFFULL;
+  P_524E6_3: MWR4((uint32_t)(uf200 & 0xFFFFFFFFULL), (uf300 & 0xFFFFFFFFULL));
+  P_524E6_4: RS1(0x44, (SX4((u49c00 & 0xFFFFFFFFULL)) < SX4(0x0ULL)));
+  P_524E6_5: RS1(0x45, ((u49c00 & 0xFFFFFFFFULL) == 0x0ULL));
+  P_524E6_6: RS1(0x46, 0x0ULL);
+  P_524E6_7: RS1(0x47, 0x0ULL);
+  A_END_524E6: ;
+A_524EE: RR_INS(0x524EEU); /* clr.l (0x3c,A5) */
+  P_524EE_0: u9300 = (RG4(0x34) + 0x3CULL) & 0xFFFFFFFFULL;
+  P_524EE_1: u9400 = (0x0ULL) & 0xFFFFFFFFULL;
+  P_524EE_2: MWR4((uint32_t)(u9300 & 0xFFFFFFFFULL), (u9400 & 0xFFFFFFFFULL));
+  P_524EE_3: RS1(0x44, 0x0ULL);
+  P_524EE_4: RS1(0x45, 0x1ULL);
+  P_524EE_5: RS1(0x46, 0x0ULL);
+  P_524EE_6: RS1(0x47, 0x0ULL);
+  A_END_524EE: ;
+A_524F2: RR_INS(0x524F2U); /* move.l #0x755f3,(0x28,A5) */
+  P_524F2_0: u49c00 = (0x755F3ULL) & 0xFFFFFFFFULL;
+  P_524F2_1: uf200 = (RG4(0x34) + 0x28ULL) & 0xFFFFFFFFULL;
+  P_524F2_2: uf300 = ((u49c00 & 0xFFFFFFFFULL)) & 0xFFFFFFFFULL;
+  P_524F2_3: MWR4((uint32_t)(uf200 & 0xFFFFFFFFULL), (uf300 & 0xFFFFFFFFULL));
+  P_524F2_4: RS1(0x44, (SX4((u49c00 & 0xFFFFFFFFULL)) < SX4(0x0ULL)));
+  P_524F2_5: RS1(0x45, ((u49c00 & 0xFFFFFFFFULL) == 0x0ULL));
+  P_524F2_6: RS1(0x46, 0x0ULL);
+  P_524F2_7: RS1(0x47, 0x0ULL);
+  A_END_524F2: ;
+A_524FA: RR_INS(0x524FAU); /* clr.w (0x88,A5) */
+  P_524FA_0: ua500 = (RG4(0x34) + 0x88ULL) & 0xFFFFFFFFULL;
+  P_524FA_1: ua600 = (0x0ULL) & 0xFFFFULL;
+  P_524FA_2: MWR2((uint32_t)(ua500 & 0xFFFFFFFFULL), (ua600 & 0xFFFFULL));
+  P_524FA_3: RS1(0x44, 0x0ULL);
+  P_524FA_4: RS1(0x45, 0x1ULL);
+  P_524FA_5: RS1(0x46, 0x0ULL);
+  P_524FA_6: RS1(0x47, 0x0ULL);
+  A_END_524FA: ;
+A_524FE: RR_INS(0x524FEU); /* move.w #-0x6d20,(0x8a,A5) */
+  P_524FE_0: u49b00 = (0x92E0ULL) & 0xFFFFULL;
+  P_524FE_1: u10400 = (RG4(0x34) + 0x8AULL) & 0xFFFFFFFFULL;
+  P_524FE_2: u10500 = ((u49b00 & 0xFFFFULL)) & 0xFFFFULL;
+  P_524FE_3: MWR2((uint32_t)(u10400 & 0xFFFFFFFFULL), (u10500 & 0xFFFFULL));
+  P_524FE_4: RS1(0x44, (SX2((u49b00 & 0xFFFFULL)) < SX2(0x0ULL)));
+  P_524FE_5: RS1(0x45, ((u49b00 & 0xFFFFULL) == 0x0ULL));
+  P_524FE_6: RS1(0x46, 0x0ULL);
+  P_524FE_7: RS1(0x47, 0x0ULL);
+  A_END_524FE: ;
+A_52504: RR_INS(0x52504U); /* clr.w (0x8c,A5) */
+  P_52504_0: ua500 = (RG4(0x34) + 0x8CULL) & 0xFFFFFFFFULL;
+  P_52504_1: ua600 = (0x0ULL) & 0xFFFFULL;
+  P_52504_2: MWR2((uint32_t)(ua500 & 0xFFFFFFFFULL), (ua600 & 0xFFFFULL));
+  P_52504_3: RS1(0x44, 0x0ULL);
+  P_52504_4: RS1(0x45, 0x1ULL);
+  P_52504_5: RS1(0x46, 0x0ULL);
+  P_52504_6: RS1(0x47, 0x0ULL);
+  A_END_52504: ;
+A_52508: RR_INS(0x52508U); /* move.l #0x5251c,(0xb0,A5) */
+  P_52508_0: u49c00 = (0x5251CULL) & 0xFFFFFFFFULL;
+  P_52508_1: uf200 = (RG4(0x34) + 0xB0ULL) & 0xFFFFFFFFULL;
+  P_52508_2: uf300 = ((u49c00 & 0xFFFFFFFFULL)) & 0xFFFFFFFFULL;
+  P_52508_3: MWR4((uint32_t)(uf200 & 0xFFFFFFFFULL), (uf300 & 0xFFFFFFFFULL));
+  P_52508_4: RS1(0x44, (SX4((u49c00 & 0xFFFFFFFFULL)) < SX4(0x0ULL)));
+  P_52508_5: RS1(0x45, ((u49c00 & 0xFFFFFFFFULL) == 0x0ULL));
+  P_52508_6: RS1(0x46, 0x0ULL);
+  P_52508_7: RS1(0x47, 0x0ULL);
+  A_END_52508: ;
+A_52510: RR_INS(0x52510U); /* lea (0x14cc9c).l,A0 */
+  P_52510_0: RS4(0x20, 0x14CC9CULL);
+  A_END_52510: ;
+A_52516: RR_INS(0x52516U); /* bra.l 0x00027ef8 */
+  P_52516_0: { RR_POLL(); if (rd_stop_on && rd_jump_stop(0x27EF8U, 0x52516U)) return; L_27EF8(); return; }
+  A_END_52516: ;
+  if (rd_stop_on && rd_jump_stop(0x5251CU, 0x52516U)) return;
+  L_5251C(); return;
+}
+
+/* ---- FUN_0005251c @ 0x05251C ---- */
+void L_5251C_at(uint32_t pc_)
+{
+  uint64_t uf200 = 0;
+  uint64_t uf300 = 0;
+  uint64_t u14800 = 0;
+  uint64_t u49c00 = 0;
+  if (pc_ == 0x5251CU && rd_on && rd_hook(0x5251CU)) return;
+resume_:
+  switch (pc_) {
+  case 0x5251CU: goto A_5251C;
+  case 0x52522U: goto A_52522;
+  case 0x52528U: goto A_52528;
+  case 0x5252AU: goto A_5252A;
+  case 0x5252CU: goto A_5252C;
+  case 0x52534U: goto A_52534;
+  case 0x5253CU: goto A_5253C;
+  default: rr_jump(pc_, pc_); return;   /* another function owns it */
+  }
+A_5251C: RR_INS(0x5251CU); /* lea (0xe562).l,A3 */
+  P_5251C_0: RS4(0x2C, 0xE562ULL);
+  A_END_5251C: ;
+A_52522: RR_INS(0x52522U); /* jsr 0x0000a1e0.l */
+  P_52522_0: RS4(0x3C, RG4(0x3C) - 0x4ULL);
+  P_52522_1: MWR4((uint32_t)RG4(0x3C), 0x52528ULL);
+  P_52522_2: { int j_ = rr_call_push(0x52528U); RR_POLL(); L_A1E0(); if (rr_after_call(j_)) return; if (rr_ret_to >= 0x5251CU && rr_ret_to <= 0x5253CU) { pc_ = rr_ret_to; goto resume_; } rr_jump(rr_ret_to, 0x52522U); return; }
+  A_END_52522: ;
+A_52528: RR_INS(0x52528U); /* bpl.b 0x0005252c */
+  P_52528_0: u14800 = ((RG1(0x44) ^ 1)) & 0xFFULL;
+  P_52528_1: if ((u14800 & 0xFFULL)) { goto A_5252C; }
+  A_END_52528: ;
+A_5252A: RR_INS(0x5252AU); /* rts */
+  P_5252A_0: RS4(0x50, (uint64_t)MRD4((uint32_t)RG4(0x3C)));
+  P_5252A_1: RS4(0x3C, RG4(0x3C) + 0x4ULL);
+  P_5252A_2: { uint32_t t_ = (uint32_t)RG4(0x50); if (rr_return(t_)) return; RR_POLL(); if (t_ >= 0x5251CU && t_ <= 0x5253CU) { pc_ = t_; goto resume_; } rr_jump(t_, 0x5252AU); return; }
+  A_END_5252A: ;
+A_5252C: RR_INS(0x5252CU); /* move.l #0x5251c,(0x10,A5) */
+  P_5252C_0: u49c00 = (0x5251CULL) & 0xFFFFFFFFULL;
+  P_5252C_1: uf200 = (RG4(0x34) + 0x10ULL) & 0xFFFFFFFFULL;
+  P_5252C_2: uf300 = ((u49c00 & 0xFFFFFFFFULL)) & 0xFFFFFFFFULL;
+  P_5252C_3: MWR4((uint32_t)(uf200 & 0xFFFFFFFFULL), (uf300 & 0xFFFFFFFFULL));
+  P_5252C_4: RS1(0x44, (SX4((u49c00 & 0xFFFFFFFFULL)) < SX4(0x0ULL)));
+  P_5252C_5: RS1(0x45, ((u49c00 & 0xFFFFFFFFULL) == 0x0ULL));
+  P_5252C_6: RS1(0x46, 0x0ULL);
+  P_5252C_7: RS1(0x47, 0x0ULL);
+  A_END_5252C: ;
+A_52534: RR_INS(0x52534U); /* move.l #0x5253e,(0xc,A5) */
+  P_52534_0: u49c00 = (0x5253EULL) & 0xFFFFFFFFULL;
+  P_52534_1: uf200 = (RG4(0x34) + 0xCULL) & 0xFFFFFFFFULL;
+  P_52534_2: uf300 = ((u49c00 & 0xFFFFFFFFULL)) & 0xFFFFFFFFULL;
+  P_52534_3: MWR4((uint32_t)(uf200 & 0xFFFFFFFFULL), (uf300 & 0xFFFFFFFFULL));
+  P_52534_4: RS1(0x44, (SX4((u49c00 & 0xFFFFFFFFULL)) < SX4(0x0ULL)));
+  P_52534_5: RS1(0x45, ((u49c00 & 0xFFFFFFFFULL) == 0x0ULL));
+  P_52534_6: RS1(0x46, 0x0ULL);
+  P_52534_7: RS1(0x47, 0x0ULL);
+  A_END_52534: ;
+A_5253C: RR_INS(0x5253CU); /* rts */
+  P_5253C_0: RS4(0x50, (uint64_t)MRD4((uint32_t)RG4(0x3C)));
+  P_5253C_1: RS4(0x3C, RG4(0x3C) + 0x4ULL);
+  P_5253C_2: { uint32_t t_ = (uint32_t)RG4(0x50); if (rr_return(t_)) return; RR_POLL(); if (t_ >= 0x5251CU && t_ <= 0x5253CU) { pc_ = t_; goto resume_; } rr_jump(t_, 0x5253CU); return; }
+  A_END_5253C: ;
+  if (rd_stop_on && rd_jump_stop(0x5253EU, 0x5253CU)) return;
+  L_5253E(); return;
 }
 

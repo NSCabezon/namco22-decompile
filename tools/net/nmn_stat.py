@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """nmn_stat.py -- what an nmn-server holds right now, per game: players, rooms, open rooms, and every room (docs/NETPLAY.md).
 
-    tools/net/nmn_stat.py [host[:port]] [--games rr,ad,tw,cs,dd,tc,pc] [--json]
+    tools/net/nmn_stat.py [host[:port]] [--games rr,ad,tw,cs,dd,tc,pc,t2] [--json]
 
 Uses only what the server answers to anyone (no slot needed): DISCOVER -> ANNOUNCE (server name, players / rooms / open rooms
 of the asker's game) and ROOMS -> ROOMLIST (each room: id, link version, state, players, size, name). The ROOMS request is
@@ -11,7 +11,7 @@ import socket, struct, sys, time, json
 
 T_DISCOVER, T_ANNOUNCE, T_ROOMS, T_ROOMLIST = 0x0C, 0x0D, 0x0F, 0x10
 NAMES = {'rr': 'Rave Racer', 'ad': 'Ace Driver', 'tw': 'Tokyo Wars', 'cs': 'Cyber Sled', 'dd': 'Dirt Dash', 'tc': 'Time Crisis',
-         'pc': 'Prop Cycle'}
+         'pc': 'Prop Cycle', 't2': 'Time Crisis 2'}
 
 def msg(kind, game, payload=b'', ver=1):
     return b'NMN2' + struct.pack('<BBHH', kind, 0, 0, len(payload)) + game.encode() + struct.pack('<HH', ver, 0) + payload

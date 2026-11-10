@@ -105,7 +105,15 @@ static void rtc_select(void)
 }
 
 /* ---------------------------------------------------------------- the sub-CPU's board */
-static uint8_t sub_port_in(void *u, int port)
+static uint8_t sub_port_in_(void *u, int port);
+static uint8_t sub_port_in(void *u, int port)         /* TEST: $TC2_SUBPINSCAN=frame -- as TC2_IOPINSCAN, the sub-CPU's pins */
+{
+    uint8_t v = sub_port_in_(u, port); extern uint32_t rr_frame;
+    static long at = -2; if (at == -2) { const char *e = getenv("TC2_SUBPINSCAN"); at = e ? atol(e) : -1; }
+    if (at >= 0 && (long)rr_frame >= at) { const long k = ((long)rr_frame - at) / 40; if (1 + (int)(k / 8) == port) v &= (uint8_t)~(1u << (k % 8)); }
+    return v;
+}
+static uint8_t sub_port_in_(void *u, int port)
 {
     (void)u;
     switch (port) {
@@ -205,7 +213,17 @@ static void sub_wr16(void *u, uint32_t a, uint16_t v)
 #define IN_USR_DOWN 0x0080
 #define IN_USR_ENTER 0x0100
 static const uint8_t io_dsw = 0xFF, io_sw = 0x03;                  /* DIP switches all off; SW2 / SW3 unpopulated (high) */
-static uint8_t io_port_in(void *u, int port)
+extern uint32_t rr_frame;
+static uint8_t io_port_in_(void *u, int port);
+static uint8_t io_port_in(void *u, int port)          /* TEST: $TC2_IOPINSCAN=frame -- from that frame, every 40 frames the next pin (ports 1-9, A, B; bit 0-7)
+                                                        * reads LOW, to find which pin a switch is on */
+{
+    uint8_t v = io_port_in_(u, port);
+    static long at = -2; if (at == -2) { const char *e = getenv("TC2_IOPINSCAN"); at = e ? atol(e) : -1; }
+    if (at >= 0 && (long)rr_frame >= at) { const long k = ((long)rr_frame - at) / 40; const int pp = 1 + (int)(k / 8), bit = (int)(k % 8); if (pp == port) v &= (uint8_t)~(1u << bit); }
+    return v;
+}
+static uint8_t io_port_in_(void *u, int port)
 {
     (void)u;
     const int service1 = (tc2_inputs & (IN_SERVICE | IN_USR_ENTER)) != 0;
@@ -226,11 +244,16 @@ static uint8_t io_switches(int n)                                  /* namcoio.cp
 {
     /* JVS_PLAYER1 (timecrs2): 0x01 gun trigger, 0x02 user enter, 0x10 user up, 0x20 user down, 0x8000 foot pedal, 0x4000 link ID (0 = left/red);
      * in_r: 0x6000 = ~(enter << 7 | up << 6 | down << 5 | test << 4 | counter connected << 2 | coin), 0x6001 = ~(pedal << 1 | trigger) */
-    const uint16_t in = tc2_inputs;
+    int tc2_link_hold_start(void);
+    int tc2_link_coin_inject(void);                 /* src/tc2_link.c: the agreed start -- the right cabinet waits for the left */
+    const uint16_t in = (uint16_t)((tc2_link_hold_start() ? tc2_inputs & ~(IN_COIN | IN_TRIGGER | IN_PEDAL) : tc2_inputs) | (tc2_link_coin_inject() ? IN_COIN : 0));
     if (n == 0)
         return (uint8_t)~((!!(in & IN_USR_ENTER)) << 7 | (!!(in & IN_USR_UP)) << 6 | (!!(in & IN_USR_DOWN)) << 5 | (!!(in & IN_TEST)) << 4
                         | 1 << 2 /* the coin counter is connected */ | (!!(in & IN_COIN)));
-    return (uint8_t)~((!!(in & IN_PEDAL)) << 1 | (!!(in & IN_TRIGGER)) | tc2_game.io_6001_held);
+    /* bit 2 = BUTTON4 = the LINK ID (MAME 0.289 timecrs2 "Link ID": off = Left/Red, on = Right/Blue -- which of the two twin cabinets
+     * this is; src/tc2_link.c: the menu's Cabinet setting, or the slot an online session gives) */
+    int tc2_link_id(void);
+    return (uint8_t)~((!!(in & IN_PEDAL)) << 1 | (!!(in & IN_TRIGGER)) | tc2_link_id() << 2 | tc2_game.io_6001_held);
 }
 static uint8_t io_gun(int off)                                      /* gun_r: X, Y, Y + 1 -- low bytes at 0..2, high bytes at 3..5 */
 {
@@ -238,6 +261,54 @@ static uint8_t io_gun(int off)                                      /* gun_r: X,
     const uint16_t d = (off % 3) == 0 ? x : (off % 3) == 1 ? y : (uint16_t)(y + 1);
     return off < 3 ? (uint8_t)d : (uint8_t)(d >> 8);
 }
+/* THE ASCA-3 / FCA-1 BOARD (tc2_game.io_asca3; MAME 0.289 namcoio.cpp namco_asca_1_device / namco_asca_3_device with s23's JVS ports):
+ * the cabinet's state as the JVS inputs MAME hands that board -- 16-bit analogue values (MAME's resting values: Angler King's arm / rod at
+ * 0x8000, the unused channels 4-7 at their active-low masks 0x84FF..0x87FF) and the rotary encoders' running counts. The host's controls write
+ * these (T6); the A/D takes the top 10 bits (adc_r: analog_input_r(N, 0xffc0) >> 6). */
+uint16_t tc2_analog_in[8] = { 0x8000, 0x8000, 0x8000, 0x8000, 0x84FF, 0x85FF, 0x86FF, 0x87FF };
+uint16_t tc2_rotary_in[2];
+/* WIND THE REEL by `counts` (its speed; Angler King ignores the direction). The board's counter is 8 bits, sign-extended by the I/O
+ * program, and the game takes the 16-bit difference between frames: crossing +-128 reads as a jump of ~256 (measured: REEL 00F8 for one
+ * frame at +8 a frame). So the count BOUNCES between -120 and +120, reversing at a bound with the whole step, and every frame's
+ * difference is exactly the winding. */
+void tc2_reel_wind(int counts)
+{
+    static int pos, dir = 1;
+    if (counts < 0) counts = -counts;
+    if (counts > 100) counts = 100;
+    if (pos + dir * counts > 120 || pos + dir * counts < -120) dir = -dir;
+    pos += dir * counts;
+    tc2_rotary_in[0] = (uint16_t)(int16_t)pos;
+}
+static uint16_t asca3_adc(void *u, int ch) { (void)u; return (uint16_t)((tc2_analog_in[ch & 7] & 0xFFC0) >> 6); }
+static uint8_t asca3_switches_(int n);
+static uint8_t asca3_switches(int n)                  /* TEST: $TC2_INRSCAN=frame -- every 40 frames the next bit of in_r 0-3 reads pressed (low) */
+{
+    uint8_t v = asca3_switches_(n); extern uint32_t rr_frame;
+    static long at = -2; if (at == -2) { const char *e = getenv("TC2_INRSCAN"); at = e ? atol(e) : -1; }
+    if (at >= 0 && (long)rr_frame >= at) { const long k = ((long)rr_frame - at) / 40; if ((int)(k / 8) == n) v &= (uint8_t)~(1u << (k % 8)); }
+    return v;
+}
+static uint8_t asca3_switches_(int n)
+{
+    /* JVS_PLAYER1 (aking): 0x02 Enter (here IN_TRIGGER, the cabinet's button), 0x10 Down, 0x20 Up; JVS_SYSTEM 0x80 Test; JVS_COIN1 bit 0 the coin,
+     * bit 7 "counter disconnected" (0). in_r 0: ~(p13 << 7 | p14 << 6 | p15 << 5 | p0 << 4 | p1 << 3 | p4 << 2 | p5 << 1 | test);
+     * 2: ~(coin << 3 | p10 << 2 | p11 << 1 | p12); 3: ~(coin2 << 3 | !counter2 disc. << 1 | !counter1 disc.); 1: buttons Angler King has none of */
+    const uint16_t in = tc2_inputs;
+    if (n == 0) return (uint8_t)~((!!(in & IN_TRIGGER)) << 3 | (!!(in & IN_USR_DOWN)) << 2 | (!!(in & IN_USR_UP)) << 1 | (!!(in & IN_TEST)));
+    if (n == 2) return (uint8_t)~((!!(in & IN_COIN)) << 3);
+    if (n == 3) return (uint8_t)~(1 << 1 | 1 << 0);
+    return 0xFF;
+}
+static uint8_t asca3_rotary(int n)                                 /* the reel: an 8-bit ABSOLUTE count (deliberately NOT MAME's rotary_diff_r) */
+{
+    /* MAME 0.289 returns the change since the last read here, and its aking reel does not work: the FCA-1 program sends this byte as is
+     * (sign-extended, 0x0CBA), the sub-CPU copies it to shared RAM 0x044034B0 (0x13C0) and the game takes the DIFFERENCE between frames
+     * (0x80002C3C: gp-26026 = new - old, its absolute value the switch test's REEL, 0x800031A8) -- so it must be a running count.
+     * Measured in the switch test: winding 3 / -5 counts a frame reads REEL 0003 / 0005; MAME's difference reads 0000 */
+    return (uint8_t)tc2_rotary_in[n];
+}
+
 /* $TC2_SWLOG=from:to -- the I/O board's switch reads in those frames (was fixed at 598..645) */
 static int swlog_on(void)
 {
@@ -249,6 +320,10 @@ static uint8_t io_rd8(void *u, uint32_t a)
     (void)u;
     if (a < 0x4000) return io_rom[a];
     if (a >= 0xC000 && a < 0xFF80) return io_ram[a - 0xC000];
+    if (tc2_game.io_asca3) {
+        if (a >= 0x6000 && a <= 0x6003) return asca3_switches((int)(a - 0x6000));
+        if (a == 0x6006 || a == 0x6007) return asca3_rotary((int)(a - 0x6006));
+    } else
     if (a == 0x6000 || a == 0x6001) { uint8_t v = io_switches(a & 1); if (swlog_on()) fprintf(stderr, "[SW] %04X = %02X frame %u\n", (unsigned)a, v, rr_frame); return v; }
     if (a >= 0x7000 && a <= 0x7005) return io_gun((int)(a - 0x7000));
     if (a == 0x7007) return 0x00;                               /* the gun's acknowledge (MAME namco_tss_io_device::gun_ack_r) */
@@ -263,7 +338,8 @@ static void io_wr8(void *u, uint32_t a, uint8_t v)
         { static long w = -2; if (w == -2) { const char *e = getenv("TC2_IOWATCH"); w = e ? strtol(e, NULL, 16) : -1; }   /* $TC2_IOWATCH=<I/O RAM address>: its writes */
           if ((long)a == w && io_ram[a - 0xC000] != v) { static unsigned long n; if (n++ < 200) fprintf(stderr, "[IOW] frame %u %04X = %02X (was %02X) pc %04X\n", rr_frame, (unsigned)a, v, io_ram[a - 0xC000], io.pc); } }
         io_ram[a - 0xC000] = v; return; }
-    if (a == 0x6002) {
+    if (tc2_game.io_asca3 && (a == 0x6004 || a == 0x6005)) { if (a == 0x6004) io_out = v; return; }   /* output_w (lamps; no recoil) */
+    if (a == 0x6002 && !tc2_game.io_asca3) {
         static int dbg = -1; if (dbg < 0) dbg = getenv("TC2_OUTLOG") != NULL;
         if (dbg && v != io_out) { extern uint32_t rr_frame; fprintf(stderr, "[OUT] frame %u: 0x6002 %02X -> %02X\n", rr_frame, io_out, v); }
         io_out = v; return;
@@ -403,6 +479,7 @@ void tc2_h8_init(const char *extracted)
     if (tc2_rom_io(extracted, io_rom, sizeof io_rom)) {
         io.advanced = 0; io.amask = 0xFFFF; io.rd8 = io_rd8; io.rd16 = io_rd16; io.wr8 = io_wr8; io.wr16 = io_wr16;
         h8p_init(&iop, H8P_3334, &io, NULL);
+        if (tc2_game.io_asca3) iop.adc_in = asca3_adc;
         iop.port_in = io_port_in; iop.port_out = io_port_out; iop.sci_tx = io_sci_tx;
         h8p_reset(&iop);
         h8_reset(&io); io.ccr = H8_I;

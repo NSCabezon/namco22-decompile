@@ -28,6 +28,22 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/gen/tc2_io.c
     COMMAND ${CMAKE_COMMAND} -E env H8_ROMSIZE=0x4000 python3 tools/h8/h8_translate.py io.bin 0 tc2io gen/tc2_io.c ${H8IO_PREFIX}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/io.bin ${H8_TOOLS} ${H8IO_COV} WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 include(host.cmake)                             # the System 23 host, shared with ../crszone
+# THE RELEASE NUMBER, shown in the log and the window title (a player's report then names it): -DTC2_VERSION=x, or a VERSION file that
+# tools/release.sh writes into the exported tree (here, or one level up in the combined release). A dev build has none.
+set(TC2_VERSION "" CACHE STRING "release number shown in the log and the title")
+if(NOT TC2_VERSION)
+  foreach(vf ${CMAKE_CURRENT_SOURCE_DIR}/VERSION ${CMAKE_CURRENT_SOURCE_DIR}/../VERSION)
+    if(EXISTS ${vf} AND NOT TC2_VERSION)
+      file(STRINGS ${vf} TC2_VERSION_LINES LIMIT_COUNT 1)
+      list(GET TC2_VERSION_LINES 0 TC2_VERSION)
+      string(STRIP "${TC2_VERSION}" TC2_VERSION)
+    endif()
+  endforeach()
+endif()
+if(TC2_VERSION)
+  add_compile_definitions(TC2_VERSION="${TC2_VERSION}")
+  message(STATUS "release ${TC2_VERSION}")
+endif()
 set(TC2_SRC ${TC2_HOST_SRC} src/tc2_game.c gen/tc2_sub.c gen/tc2_io.c ${TC2_LIFTED})
 # PORTABLE (default ON): pin glibc symbol versions so a binary built here runs on older systems -- the Steam Deck included
 option(PORTABLE "Bind glibc symbols to baseline versions (runs on glibc >= 2.34)" ON)

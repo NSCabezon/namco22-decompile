@@ -60,7 +60,10 @@ void tc2_text_mix(const tc2_frame_state *fs, uint32_t *rgba, const uint16_t *mix
         const uint32_t pen = mix[k], c = fs->pens[pen & 0x7FFF];
         int r = c >> 16 & 0xFF, g = c >> 8 & 0xFF, b = c & 0xFF;
         if (fade) { r = (r * ff + fr * ffi) >> 8; g = (g * ff + fg * ffi) >> 8; b = (b * ff + fb * ffi) >> 8; }
-        if (af && ((int)(pen & 0xF) == a_mask || ((int)pen >= c12 && (int)pen <= c13))) {
+        /* MAME keeps the pen in a u8 here, so the C404 range 0x12..0x13 is compared with the pen's LOW BYTE (palette nibble + pen): Crisis Zone's
+         * HUD bar is text palettes 5-6 (0x50..0x6F) over a palette base of 0x7F00 -- compared whole it never matched, the bar was opaque and hid
+         * the bullet and life icons (polygons) under it */
+        if (af && ((int)(pen & 0xF) == a_mask || ((int)(pen & 0xFF) >= c12 && (int)(pen & 0xFF) <= c13))) {
             const uint32_t d = rgba[k];
             r = (r * alpha + (int)(d >> 16 & 0xFF) * alphai) >> 8; g = (g * alpha + (int)(d >> 8 & 0xFF) * alphai) >> 8; b = (b * alpha + (int)(d & 0xFF) * alphai) >> 8;
         }

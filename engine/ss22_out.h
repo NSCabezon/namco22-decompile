@@ -5,7 +5,7 @@
  * `-output network` does, so the tools written for it (MAMEHooker and its Linux ports, gun-recoil drivers) work unchanged:
  *   TCP, default port 8000 (SS22_OUT_PORT=<n>, 0 = off; SS22_OUT_BIND=<addr>, default 127.0.0.1 -- local tools only)
  *   on connect:  "mame_start = <set name>\r"       on every change:  "mcuout<N> = <0|1>\r"
- * A game that declares recoil bits (ss22_game.recoil_mask) also rumbles the game pad on each rising edge (SS22_RUMBLE=0 turns that off).
+ * A game that declares recoil bits (ss22_game.recoil_mask) also rumbles the game pad on each rising edge (Controls > Pad rumble on recoil, out_rumble= in the cfg; SS22_RUMBLE=0 forces it off).
  * SS22_OUTDBG=1 logs every change.
  */
 #ifndef SS22_OUT_H

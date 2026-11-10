@@ -134,12 +134,17 @@ static const char *backup_path; static uint8_t backup_saved[0x10000]; static int
 void tc2_backup_load(int window)
 {
     const char *e = getenv("TC2_BACKUP");
-    static char def[64]; snprintf(def, sizeof def, "%s_backup.nv", tc2_game.tag);
+    const char *tc2_instance(void);
+    static char def[64]; snprintf(def, sizeof def, "%s%s_backup.nv", tc2_game.tag, tc2_instance());
     backup_path = e && *e ? e : window ? def : NULL;
     if (!backup_path) return;
     backup_on = 1;
     uint8_t *m = vram_mem[0];
     FILE *f = fopen(backup_path, "rb");
+    if (!f && !e && tc2_instance()[0]) {                  /* a second copy's first run: it starts from the first copy's settings and rankings */
+        char base[64]; snprintf(base, sizeof base, "%s_backup.nv", tc2_game.tag);
+        f = fopen(base, "rb"); if (f) fprintf(stderr, "[NV] no %s yet: starting from %s\n", backup_path, base);
+    }
     if (!f) { fprintf(stderr, "[NV] no %s yet: the backup RAM starts blank (the game sets its defaults)\n", backup_path); memcpy(backup_saved, m, sizeof backup_saved); return; }
     uint8_t hdr[8], sum4[4], buf[0x10000];
     const int ok = fread(hdr, 1, 8, f) == 8 && !memcmp(hdr, "TC2BKUP1", 8) && fread(buf, 1, sizeof buf, f) == sizeof buf && fread(sum4, 1, 4, f) == 4;

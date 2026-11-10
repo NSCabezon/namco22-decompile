@@ -14,6 +14,7 @@ typedef struct { const char *file; uint32_t at; } rr_wave_t;
  * switch ON (these screens loop while it is on); the main loop then starts the screen, and turning the Test switch OFF is the
  * screen's own exit back into the game (rr_main.c rr_debug_launch). */
 typedef struct { const char *name; uint32_t entry; const char *help; } rr_debug_t;
+#define DEBUG_DSW_LEAVE 0xFFFFFFFFu
 
 typedef struct {
     const char *name;                       /* "raverace", "acedrive" ... */
@@ -42,6 +43,14 @@ typedef struct {
     const rr_debug_t *debug; int ndebug;    /* developer screens for the Debug menu page (none: the page is hidden) */
     uint32_t task_sp, task_sp_empty;        /* where the coroutine task stack pointer lives, and its value when empty (main context) */
     uint32_t task_slot;                     /* the mode task's resume slot the Debug page writes */
+    /* A DEBUG MENU BEHIND A DIP SWITCH (Ridge Racer 2): debug_dsw != 0 means the game enters its own developer menu while these DIP
+     * bits are ON (cleared: active low), and the Debug page works through them instead of the task slot. rr_debug_t.entry is then
+     * 0 = open the menu, DEBUG_DSW_LEAVE = the DIP switch off again (back to the game), anything else = the state value the menu's
+     * own selection writes: once the mode word reads debug_mode and the state word debug_menu_state (the menu waiting for a pick),
+     * entry goes into the state word and (entry - 1) / 2 into the cursor word, as a press of gas on that item does. */
+    uint32_t debug_dsw;
+    uint32_t debug_mode_addr, debug_state_addr, debug_cursor_addr;   /* 16-bit work-RAM words */
+    uint16_t debug_mode, debug_menu_state;
     /* A player's first run: the chips taken out of these MAME zips by the ENGINE's table-driven unpacker (engine/romzip.c) when
      * the ROM folder is incomplete. NULL roms = Rave Racer's own src/rr_romzip.c (autosetup). */
     const char *const *zips; int nzips;
@@ -52,6 +61,34 @@ typedef struct {
      * low). Keys drive both sticks as "tank" controls through the existing actions (gas = forward, brake = back, steer = turn: the
      * sticks pushed opposite ways); a gamepad's two sticks are the cabinet's two sticks. 0 = the driving model (every other game). */
     int twin_stick;
+    /* WIDESCREEN: the game's full-screen effects (a camera-facing quad sized to the 640 x 480 screen, e.g. Cyber Commando's hit flash)
+     * reach the wide picture's edges (rr_gl.c wide_screen_quad). 0 = off (every other game). */
+    int wide_screen_quads;
+    /* WIDESCREEN HUD: text cells {row, col, tile} that hold that tile only while the race HUD is up (any one showing = up); the HUD
+     * then moves to the picture's sides (engine/hud_edges.h). NULL = Rave Racer's gear-ladder marks (rr_gl.c). */
+    const uint16_t (*hud_marks)[3]; int n_hud_marks;
+    /* FORCE FEEDBACK FOR A CABINET WITHOUT A WHEEL MOTOR (Ridge Racer 1/2: MAME copies no drive byte for them): the force, -1..1
+     * (negative pushes toward the wheel's higher A-D side, eng_ffb.h's sign), built from the game's state once per host frame.
+     * NULL = play the motor byte the game leaves for the I/O board (every other game). */
+    double (*ffb_synth)(void);
+    /* THE C139 LINK (src/rr_link.c), when it differs from Rave Racer's: link_payload = payload words per frame (0 = 0x26; the frame
+     * is payload + a length word + a checksum word); link_tx_reg6 = the sender programs reg 0xE (ring position) and reg 0xA (size)
+     * between reg 6 = 1 and reg 6 = 0 (Ridge Racer 2, 0x1BF38) instead of toggling reg 4 1 -> 3; link_id_addr = the byte holding this
+     * cabinet's link number (0 = Rave Racer's settings byte 0x10001060). */
+    int link_payload, link_tx_reg6;
+    /* link_ring: the game's link is a RING (Ridge Racer 2, 0x1C17E): a cabinet counts itself linked only while its OWN frame comes
+     * back round, and it forwards every frame it receives. Online (rr_net.c) a cabinet then sends only its own frames -- the server
+     * already gives every peer the originals -- and echoes its own frame into its own receive ring, which closes the ring. */
+    int link_ring;
+    uint32_t link_id_addr;
+    /* THE GAME'S OWN SETTINGS, when they are not Rave Racer's (EEPROM settings groups 2 / 3, rr_hw.c): free play on/off and this
+     * cabinet's link number (with whatever latches the game copies it into at boot). NULL = Rave Racer's. */
+    void (*freeplay_set)(bool on); bool (*freeplay_get)(void);
+    void (*link_cabinet_set)(int n);
+    /* THE CAR (Controls > Car, saved as `car`): the game's own car / colour option, one name per value (Ridge Racer 2's CAR TYPE,
+     * 1 BLUE .. 8 GREEN). ncars 0 = no such row. */
+    const char *const *cars; int ncars;
+    void (*car_set)(int i); int (*car_get)(void);
     const char *const *act_label;           /* per-action names for the Controls page (NULL entries / NULL table = the action's own name) */
     const struct rr_bind_default { int act; const char *keys, *pad; } *bind_defaults;   /* default keys / pad button replacing the
                                              * driving defaults for these actions (keys: SDL names, comma-separated; pad NULL = none) */

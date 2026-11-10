@@ -9,7 +9,10 @@
 #include <stdint.h>
 #include <SDL2/SDL.h>
 #include "eng_ui.h"
+#include "twin_stick.h"
 
+/* a TANK game on two sticks (ss22_input_game.tank): the first four rows of its table are the two levers, forward and back */
+enum { SS22_TANK_L_FWD, SS22_TANK_L_BACK, SS22_TANK_R_FWD, SS22_TANK_R_BACK, SS22_TANK_LEVERS };
 enum { SS22_AX_NONE = 0, SS22_AX_WHEEL_LEFT, SS22_AX_WHEEL_RIGHT, SS22_AX_PEDAL1, SS22_AX_PEDAL2 };
 #define SS22_PAD(b) (1u << (b))              /* an SDL_CONTROLLER_BUTTON_* in an action's pad mask */
 
@@ -49,6 +52,12 @@ typedef struct {
      * wheel's position, damping on its speed); the others are the road. Tapping the sum gives the force in full resolution,
      * and the two groups their own gains (the Controls page's FFB centering / FFB road effects). */
     struct { uint32_t addr; int parts; unsigned centre; int limit; } torque;
+    /* TWO STICKS DRIVING A WHEEL-AND-PEDALS TANK (Tokyo Wars), as Cyber Sled is driven: each stick is one track's lever. Both forward = the
+     * forward pedal, both back = the backward pedal, one against the other = the wheel (left forward, right back turns right). Rows
+     * through engine/twin_stick.c (a key, a pad input, two joystick slots each -- two joysticks of one model told apart): the four
+     * SS22_TANK_* levers first, then buttons, each pressing tank_bits[row]. NULL = not a tank game. */
+    const ts_def *tank; int ntank;
+    const uint16_t *tank_bits;
 } ss22_input_game;
 
 void ss22_input_init(const ss22_input_game *g);         /* after the settings file is loaded: the key bindings, the pads */
@@ -63,6 +72,7 @@ void ss22_input_motor(uint8_t b);
 /* the crosshair: where the gun is aimed in the 4:3 game picture, 0..1 each way; false = off-screen (nothing to draw) */
 bool ss22_input_aim(float *nx, float *ny);
 void ss22_input_rumble(uint16_t low, uint16_t high, uint32_t ms);   /* a short kick on every connected pad (engine/ss22_out.c: a gun's recoil) */
+bool ss22_input_pad_rumble(void);                        /* Controls > Pad rumble on recoil */
 void ss22_input_kick(void);                             /* the handle solenoid fired: a jolt on the bound force-feedback wheel (kick_wheel games) */
 void ss22_input_kick_frame(void);                       /* once per frame: the jolt's next step (runs whoever has the cabinet's inputs) */
 void ss22_input_close(void);                            /* stop the wheel's force and let go of it (also run at exit) */

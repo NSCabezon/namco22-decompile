@@ -16,6 +16,7 @@ cargo build --release
 #   --frame-idle-sec 90       a session with no FRAME for this long is ended
 #   --status-sec 60           one status line per occupied room this often (0 = never)
 #   --stats-file PATH         keep LIFETIME STATISTICS in PATH (saved every minute; off unless given)
+#   --chat-file PATH          keep each game's CHAT HISTORY (the last 50 lines) in PATH (saved within 10 s; in memory only unless given)
 
 ## Statistics
 
@@ -27,6 +28,11 @@ players online; and per player NAME (what they typed in the lobby) how many sess
 
 Nothing personal is kept: a player is counted DISTINCT by a salted hash of their IP address (the salt is random per file), never
 the address itself -- so people sharing one connection count as one. Docker: `NMN_STATS_FILE=/data/stats.txt` (mount a volume).
+
+CHAT HISTORY: the server keeps each game's last 50 chat lines (from every room of that game) and sends them, oldest first, to
+everyone who joins -- after the newcomer's first message, never with the WELCOME, so a spoofed HELLO cannot be used to amplify.
+`--chat-file /path/chat.txt` (Docker `NMN_CHAT_FILE`) keeps them across restarts: one line per chat line, `game TAB unix-time
+TAB name TAB text`; delete the file (with the server stopped) to clear the history.
 What is online right now, from anywhere: `tools/net/nmn_stat.py host[:port]` (the live rooms; no history).
 cargo test                                  # protocol conformance tests (no sockets, fake clock)
 ```

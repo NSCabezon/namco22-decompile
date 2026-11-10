@@ -19,7 +19,7 @@ Get-FileHash -Algorithm MD5 *
 (or `certutil -hashfile <file> MD5` for one file), and compare with the table. The **CRC32** column is the one MAME's own
 ROM lists show.
 
-Rave Racer's, Ace Driver's and Cyber Commando's `c74.bin` (the sound chip's BIOS) comes from `namcoc74.zip`. The DSP's BIOS, `c71.bin` (MAME's `namcoc71`), is built into every System 22 game and
+Rave Racer's, Ace Driver's, Cyber Commando's and Ridge Racer 2's `c74.bin` (the sound chip's BIOS) comes from `namcoc74.zip`. The DSP's BIOS, `c71.bin` (MAME's `namcoc71`), is built into every System 22 game and
 is not needed; if you have it, its MD5 is `223914888d9be9ffe07952d9aa4c4107` (CRC32 `47c623ab`).
 
 ## Prop Cycle
@@ -318,6 +318,38 @@ MAME set: `cybrcomm` (Japan, CY1) and `namcoc74`. Unpacked chips end up in `cybr
 | `rr1gam.3d` | 256 | `8554aa5b8d9b2bfac5222d3391de25f0` | `b2161bce` |
 | `rr1gam.4d` | 256 | `8554aa5b8d9b2bfac5222d3391de25f0` | `b2161bce` |
 
+## Ridge Racer 2
+
+MAME set: `ridgera2` (World, RRS2) and `namcoc74`. Unpacked chips end up in `ridgera2/extracted/`. 25 files.
+
+| File | Size | MD5 | CRC32 |
+|---|---:|---|---|
+| `c74.bin` | 16384 | `c78a2c4d6071a227e6d49bc009ef7600` | `a3dce360` |
+| `rr1gam.2d` | 256 | `8554aa5b8d9b2bfac5222d3391de25f0` | `b2161bce` |
+| `rr1gam.3d` | 256 | `8554aa5b8d9b2bfac5222d3391de25f0` | `b2161bce` |
+| `rr1gam.4d` | 256 | `8554aa5b8d9b2bfac5222d3391de25f0` | `b2161bce` |
+| `rrs1ccrh.5c` | 524288 | `bd8f35fc178af5291699692ae0361532` | `bd3c86ab` |
+| `rrs1ccrl.5a` | 2097152 | `bb1c3638381883609a51a511c707da6b` | `304a8b57` |
+| `rrs1cg0.1a` | 2097152 | `befecfc0b75b3e1190164d6afdcce079` | `714c0091` |
+| `rrs1cg1.2a` | 2097152 | `c2ae0da7518511b0e9ad86ba31469844` | `836545c1` |
+| `rrs1cg2.3a` | 2097152 | `ca8efdddabf28808292db41b4ae5735b` | `00e9799d` |
+| `rrs1cg3.5a` | 2097152 | `54921ec062f234acfc0dc24799d388d7` | `3858983f` |
+| `rrs1data.6r` | 524288 | `e3c36a75ace5a3213a1996590e50794e` | `b7063aa8` |
+| `rrs1pol0.5b` | 524288 | `5e9bf8c867a9e9a275fef44f2fec2807` | `9376c384` |
+| `rrs1pol1.4b` | 524288 | `72b80c533b294f0ff27b2b808226e4e3` | `094fa832` |
+| `rrs1pom0.5c` | 524288 | `a9885cb3e64cb36227c7409c3a064e09` | `b47a7f8b` |
+| `rrs1pom1.4c` | 524288 | `2e7c2a7ba26c95816d5fd8cf78f9bd4e` | `27260361` |
+| `rrs1pou0.5d` | 524288 | `d246eae609330245a61967c6b0695ca7` | `74d6ec84` |
+| `rrs1pou1.4d` | 524288 | `ad04db595df6939c955b4952ff019774` | `f527caaa` |
+| `rrs1wav0.10r` | 1048576 | `d25f058bc3c48458938ac25b298721d9` | `99d11a2d` |
+| `rrs1wav1.10p` | 1048576 | `fb115463eba9435650474d0ae167cfcf` | `ad28444a` |
+| `rrs1wav2.10n` | 1048576 | `73c8c196d3d3e568b90425247316978d` | `6f0d4619` |
+| `rrs1wav3.10l` | 1048576 | `22a82a6fc017bb8d7c6b3384386243d4` | `106e761f` |
+| `rrs2_prgll.4d` | 524288 | `a0f696df38f666bd6ea67dcd7a811289` | `88199c0f` |
+| `rrs2_prglm.2d` | 524288 | `6cf2fe15c5699c97f7e1d2ad2c407e9b` | `8e86f199` |
+| `rrs2_prgum.8d` | 524288 | `6353961b75b8a608ad5bf9dc542e6ba5` | `78c360b6` |
+| `rrs2_prguu.6d` | 524288 | `c9488dad6c3ca64afc02d62a43882a8c` | `60d6d4a4` |
+
 ## Cyber Sled
 
 MAME set: `cybsled` (World, CY2), `namcoc67` and `namcoc68`. Unpacked chips end up in `cybsled/extracted/`. 30 files.
@@ -354,3 +386,102 @@ MAME set: `cybsled` (World, CY2), `namcoc67` and `namcoc68`. Unpacked chips end 
 | `cy2-spr-l.4c` | 524288 | `f519aa6495d765722c7daa6c3a69d289` | `4066291a` |
 | `cy2-spr-u.6c` | 524288 | `8e28d63abcd9b60147c35d44fafecacd` | `575a422d` |
 | `cybsled.nv` | 8192 | `671fef57adc93d69feada9f50f3ad784` | `aa18bf9e` |
+
+## Time Crisis II
+
+MAME set: `timecrs2` (US, TSS3 Ver.B). Unpacked chips end up in `tc2/extracted/`. 22 files.
+
+| File | Size | MD5 | CRC32 |
+|---|---:|---|---|
+| `tss1ccrh.7e` | 2097152 | `6a42384da3aeb1aa5e38f6015defbb6d` | `f998de1a` |
+| `tss1ccrl.7f` | 4194304 | `a1df84856600ebad532c23914afab1c5` | `3a325fe7` |
+| `tss1cgll.4m` | 8388608 | `67a3a8563a72dde5ebe98d8886fdb0ba` | `18433aaa` |
+| `tss1cglm.4k` | 8388608 | `757b4d3f6ab011cdb4ed813f680fe43a` | `669974c2` |
+| `tss1cgum.4j` | 8388608 | `f791c542b157effc7859d6ae78fc5992` | `c22739e1` |
+| `tss1cguu.4f` | 8388608 | `f5d94c8c7c2a6e96dfcc01bd2237cf35` | `76924e04` |
+| `tss1mtah.2j` | 8388608 | `70124b89b972bcc4157c2ac88a6ce718` | `697c26ed` |
+| `tss1mtal.2h` | 8388608 | `8b70fb75c64d251645fa6c0b44ade8d2` | `bfc79190` |
+| `tss1mtbh.2m` | 8388608 | `e3a70c5d76dea4e70a96ec47643a274e` | `82582776` |
+| `tss1mtbl.2f` | 8388608 | `653caa4af2c6be02f0648baa95d916c3` | `e648bea4` |
+| `tss1pt0h.7a` | 4194304 | `ea6e4766e4addb3c48f017821b16b7ce` | `cdbe0ba8` |
+| `tss1pt0l.7c` | 4194304 | `01c20b6470b02a2fe90a3b17a8f613c4` | `896f0fb4` |
+| `tss1pt1h.5a` | 4194304 | `35bdbb96dbff3645d54ef187ac7f3335` | `63647596` |
+| `tss1pt1l.5c` | 4194304 | `208c03507c9239debdc08e0ef1663f22` | `5a09921f` |
+| `tss1pt2h.4a` | 4194304 | `d33ba0afb6fe9f1a3104faa6ca656f6e` | `9b06e22d` |
+| `tss1pt2l.4c` | 4194304 | `1405a1ad95457cd465e5e522c64a9aa7` | `4b230d79` |
+| `tss1vera.3` | 524288 | `91dcca3b700c0f1c626138a1cc44cbd2` | `41e41994` |
+| `tss1waveh.2a` | 8388608 | `e0c5f92b23162bac5793332aca9f4423` | `5c8758b4` |
+| `tss1wavel.2c` | 8388608 | `4c4b10cbaab533a4badc0d4f28d01b01` | `deaead26` |
+| `tss3verb.1` | 2097152 | `825e2529c601b08f1dcbb43016410ee2` | `6e3f232b` |
+| `tss3verb.2` | 2097152 | `fe415802a9076f39493861f7de633d46` | `c7be691f` |
+| `tssioprog.ic3` | 262144 | `ff39548cd899ac1d01d1a2f96077c840` | `edad4538` |
+
+## Crisis Zone
+
+MAME set: `crszone` (World, CSZO4 Ver.B). Unpacked chips end up in `crszone/extracted/`. 23 files. If MAME keeps the I/O board's program (`csz1prg0a.8f`) in a separate `namco_csz1.zip`, put that beside `crszone.zip`.
+
+| File | Size | MD5 | CRC32 |
+|---|---:|---|---|
+| `csz1ccrh.7e` | 2097152 | `4e8631e4c5feef7f4bb58d0e503b705e` | `bc2fa03c` |
+| `csz1ccrl.7f` | 4194304 | `5618c9356eecdfe37ee2e8d78e561b07` | `1c20768d` |
+| `csz1cgll.4m` | 8388608 | `0ac875b81e3d7bd97ae97d150175f230` | `0bcd41f2` |
+| `csz1cglm.4k` | 8388608 | `a0e6901e2a6b557bc7e2d6e9ed6fa1b6` | `d4af93d1` |
+| `csz1cgum.4j` | 8388608 | `05123f52bf7faef780f2e4e9db86711f` | `913c98b5` |
+| `csz1cguu.5f` | 8388608 | `2de8240bd842f8fcaa447b06d166f625` | `e1d1bf24` |
+| `csz1mtah.2j` | 8388608 | `29f2acee88a116d7e8d80b6a151927c8` | `66b076ad` |
+| `csz1mtal.2h` | 8388608 | `b4b0b9103be7230e35ab5e0c48bbf57d` | `38dc639a` |
+| `csz1mtbh.2m` | 8388608 | `6ab0964bb30f6a805d03c5a4602dd276` | `bdec4188` |
+| `csz1mtbl.2f` | 8388608 | `c357f961409afc7d4847a130855b3f7e` | `9c8f8d7a` |
+| `csz1prg0a.8f` | 131072 | `52d170854516489d99e73c4c915fdefd` | `8edc36b3` |
+| `csz1pt0h.7a` | 4194304 | `2d4301665c7c3dc561919e0289bd9b8f` | `e82f1abb` |
+| `csz1pt0l.7c` | 4194304 | `95637dbecb45364403a342fb39fc086d` | `b0d66afe` |
+| `csz1pt1h.5a` | 4194304 | `faca4b01e136d850493a29bc2ef8c683` | `e54f80ad` |
+| `csz1pt1l.5c` | 4194304 | `5773879c23520a77984cc5316481c627` | `527171c8` |
+| `csz1pt2h.4a` | 4194304 | `a5286aedab68a3440fae1ce0477be2af` | `e295137a` |
+| `csz1pt2l.4c` | 4194304 | `3b083ec880f4c578fede3e864d8da4bd` | `c87d6dbd` |
+| `csz1pt3h.3a` | 4194304 | `42609386c6d62dd8a00aa7e21b3d2a4c` | `05f65bdf` |
+| `csz1pt3l.3c` | 4194304 | `86a0f31c0fb58838b99e66147d9c30d4` | `5d077c0f` |
+| `csz1waveh.2a` | 8388608 | `1440ee5df5da8a16070ce47475c49ff0` | `de9d14a8` |
+| `csz1wavel.2c` | 8388608 | `1edc748d021925313bca7393c021a4b6` | `d0d74132` |
+| `cszo3verb.ic1` | 524288 | `e5eff660b92812891cf6110f8806f9f0` | `c790743b` |
+| `cszo4verb.ic4` | 8388608 | `821af14d9188a0e464ab5c12c63a8a9d` | `6192533d` |
+
+## Angler King
+
+MAME set: `aking` (Japan, AG1 Ver.A). Unpacked chips end up in `aking/extracted/`. 24 files.
+
+The I/O board's program comes in two revisions, and **either works** (GitHub #89):
+
+| File | Where MAME keeps it | Size | MD5 | CRC32 |
+|---|---|---:|---|---|
+| `asc3_io-c1.ic14` | older sets: inside `aking.zip` (and `500gp.zip`) | 131072 | `162005b32c4b3ddb9afa772bffb97505` | `b6627a0e` |
+| `asc3_io-c.ic14` | current sets: the device zip `namco_fca10.zip` (or inside a non-merged `aking.zip`) | 131072 | `e1cd95ededc8283491ec9c4f43cd99b0` | `2f272a7b` |
+
+The program code in both is byte-identical. They differ only in the board's name string: `FCA-1;Ver1.00` in the first, `ASCA-3;Ver2.04` in the second. Angler King refuses the second name ("Please connect FCA-1 PCB."), so when the game or `tools/setup_roms.py` finds `asc3_io-c.ic14` it writes the FCA-1 name into it. It then checks the result against `b6627a0e`. Either way, `extracted/asc3_io-c1.ic14` is the file in the table below.
+
+| File | Size | MD5 | CRC32 |
+|---|---:|---|---|
+| `ag1ccrh.7e` | 2097152 | `7b2cb3a9793f489962270a1eb7986563` | `abe2aab1` |
+| `ag1ccrl.7f` | 4194304 | `494b01a6910e7c1bc0223c6feecf2816` | `86bbe1f9` |
+| `ag1cgll.4m` | 8388608 | `bca574b4fd8108917b4c4c3709bf05fa` | `9db7e939` |
+| `ag1cglm.4k` | 8388608 | `f34ab3a3bf1effdb292dd956d51fe0e1` | `17792dba` |
+| `ag1cgum.4j` | 8388608 | `244a0b0be4df87574624c39e9c71ac91` | `5dfa863d` |
+| `ag1cguu.4f` | 8388608 | `84083ef74aca72375080842eab0a1b30` | `86396786` |
+| `ag1mtah.2j` | 8388608 | `07e3bb43457cfa2bead42ce8d3f8c955` | `f2d8ca9d` |
+| `ag1mtal.2h` | 8388608 | `60312dbbb12bb1cc6e229f26e48a0e16` | `7facbfd4` |
+| `ag1mtbh.2m` | 8388608 | `27298a48d20addca79aa355ed5259b99` | `890bdb52` |
+| `ag1mtbl.2f` | 8388608 | `bfb15a4e6aa035009707628a79ba80d5` | `62d771c9` |
+| `ag1pt0h.7a` | 4194304 | `e15b06fd03974898ec988978073fe5fd` | `b5582ca7` |
+| `ag1pt0l.7c` | 4194304 | `ff95bab878c61fdc2debefb67dc6acf4` | `10e7f54f` |
+| `ag1pt1h.5a` | 4194304 | `0f584e9836a7f640443eb50c0905c676` | `25e4776a` |
+| `ag1pt1l.5c` | 4194304 | `07c88b45ef01f69d17a2014b9fe4dac5` | `5d3d7099` |
+| `ag1pt2h.4a` | 4194304 | `acc7111268d57ca89180e34face3136d` | `f0eb9012` |
+| `ag1pt2l.4c` | 4194304 | `9e9d79760c46daa22e4be585a6a9eff3` | `bf92c054` |
+| `ag1pt3h.3a` | 4194304 | `aaf7e0efe6dfadc9ef6c2d559ec7f24e` | `e11a12ce` |
+| `ag1pt3l.3c` | 4194304 | `a61576a6f2ffeb05499a1f4c060e116c` | `04b475db` |
+| `ag1vera.ic1` | 2097152 | `4230a9e1c105f3ae1e923c57c2f85640` | `f1a08d5c` |
+| `ag1vera.ic2` | 2097152 | `3751cc4125b3839fde5c8b9bc35d86ad` | `dc98fefb` |
+| `ag1vera.ic3` | 524288 | `4e5ff95bc3b5dd3d6b42b24fa47cb4d8` | `266ac71c` |
+| `ag1waveh.2a` | 8388608 | `409c99191e47dedaaa8b272ce104fca3` | `37a61daa` |
+| `ag1wavel.2c` | 8388608 | `ac8cb58f1a4a602b2448694281f9c62c` | `d7fefbd4` |
+| `asc3_io-c1.ic14` | 131072 | `162005b32c4b3ddb9afa772bffb97505` | `b6627a0e` |

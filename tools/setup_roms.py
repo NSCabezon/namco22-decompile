@@ -33,6 +33,10 @@ REQUIRED = {
 # Nice to have; the game runs without it.
 OPTIONAL = {}
 
+# The names another MAME version gives the same chips (same CRC): MAME 0.289 calls the program chips pr2vera.1..4, older sets
+# pr2ver-a.1..4. They are unpacked under our name (GitHub #65: a current set was "missing pr2vera.1").
+ALT = {"pr2vera.1": "pr2ver-a.1", "pr2vera.2": "pr2ver-a.2", "pr2vera.3": "pr2ver-a.3", "pr2vera.4": "pr2ver-a.4"}
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEST = os.path.join(os.path.dirname(HERE), "extracted")
 
@@ -54,7 +58,7 @@ def from_zip(path):
         for info in z.infolist():
             if info.is_dir() or "/" in info.filename.strip("/"):
                 continue
-            name = info.filename.lower()
+            name = ALT.get(info.filename.lower(), info.filename.lower())
             if name in REQUIRED or name in OPTIONAL:
                 found[name] = z.read(info)
     return found
@@ -63,7 +67,7 @@ def from_zip(path):
 def from_folder(path):
     found = {}
     for entry in os.listdir(path):
-        name = entry.lower()
+        name = ALT.get(entry.lower(), entry.lower())
         if name in REQUIRED or name in OPTIONAL:
             with open(os.path.join(path, entry), "rb") as f:
                 found[name] = f.read()

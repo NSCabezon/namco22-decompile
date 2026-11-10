@@ -1,21 +1,39 @@
 /*
- * s21_input.c -- Cyber Sled's cabinet on a keyboard and SDL game controllers: two sticks (the sled is driven tank-style, left and
- * right stick forward/back), Gun, Missile, Viewport, coin, start, the Test switch (a TOGGLE, like MAME's PORT_SERVICE) and the
- * Service button. Keys are MAME's defaults for cybsled (left stick E/D and S/F, right stick I/K and J/L) plus arrows/WASD-free
- * extras; a held key ramps the stick 16 counts a frame (PORT_KEYDELTA 16) and it springs back when released.
- * TODO (HARD RULE 3): rebinding rows like engine/ss22_input.c -- that layer is wheel/pedal-shaped; generalising it to N analog
- * axes is the shared fix (work/proposed_patches note), not a copy here.
+ * s21_input.c -- Cyber Sled's cabinet on a keyboard, gamepads and joysticks: two sticks (the sled is driven tank-style, left and right
+ * stick forward/back), Gun, Missile, Viewport, coin, start, the Test switch (a TOGGLE, like MAME's PORT_SERVICE) and the Service
+ * button. EVERY direction of both sticks and every button is bound on the Controls page (engine/twin_stick.c): a key, a gamepad
+ * button or stick, or any joystick's axis, hat or button -- two joysticks of the same model are told apart. The defaults are MAME's
+ * keys for cybsled (left stick E/D and S/F, right stick I/K and J/L), the arrows as "tank" controls and a gamepad's two sticks; a
+ * held key ramps the stick 16 counts a frame (PORT_KEYDELTA 16) and it springs back when released, an axis sets it directly.
  */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
 #include "eng_cfg.h"
+#include "eng_ui.h"
+#include "twin_stick.h"
 #include "s21_host.h"
 #include "s21_board.h"
 #include "s21_io.h"
 
-static SDL_GameController *pads[4];
+/* the Controls page's bindable rows (twin_stick.h: the eight directions first) */
+enum { CS_FWD = TS_NDIR, CS_BACK, CS_TURN_L, CS_TURN_R, CS_STRAFE, CS_GUN, CS_MISSILE, CS_VIEW, CS_COIN, CS_START, CS_SERVICE, CS_NCTL };
+static const ts_def cs_ctl[CS_NCTL] = {
+    [TS_L_UP]    = { "Left stick up",    "left_up",    "E", "-lefty" },  [TS_L_DOWN]  = { "Left stick down",  "left_down",  "D", "+lefty" },
+    [TS_L_LEFT]  = { "Left stick left",  "left_left",  "S", "-leftx" },  [TS_L_RIGHT] = { "Left stick right", "left_right", "F", "+leftx" },
+    [TS_R_UP]    = { "Right stick up",   "right_up",   "I", "-righty" }, [TS_R_DOWN]  = { "Right stick down", "right_down", "K", "+righty" },
+    [TS_R_LEFT]  = { "Right stick left", "right_left", "J", "-rightx" }, [TS_R_RIGHT] = { "Right stick right", "right_right", "L", "+rightx" },
+    [CS_FWD]     = { "Both sticks forward", "tank_forward", "Up", "dpup" },   [CS_BACK]   = { "Both sticks back", "tank_back", "Down", "dpdown" },
+    [CS_TURN_L]  = { "Turn left",  "tank_left",  "Left", "dpleft" },          [CS_TURN_R] = { "Turn right", "tank_right", "Right", "dpright" },
+    [CS_STRAFE]  = { "Strafe (with Turn)", "tank_strafe", "Left Shift,Right Shift", NULL },
+    [CS_GUN]     = { "Gun",      "gun",     "Left Ctrl,Z", "a,+righttrigger" }, [CS_MISSILE] = { "Missile", "missile", "Left Alt,X", "b,+lefttrigger" },
+    [CS_VIEW]    = { "Viewport", "view",    "Space,C", "y" },
+    [CS_COIN]    = { "Coin",     "coin",    "5", "back" },    [CS_START] = { "Start", "start", "1,Return", "start" },
+    [CS_SERVICE] = { "Service button", "service", "9", "leftshoulder" },
+};
+static void cfg_save(const char *k, const char *v) { eng_cfg_set(k, v); }
+
 static int test_on, test_prev;
 static int axis[4] = { 0x7F, 0x7F, 0x7F, 0x7F };       /* an0 right Y, an1 left Y, an2 right X, an3 left X */
 
@@ -107,6 +125,7 @@ static double raw_turn(int *on)
     double best = 0;
     for (int i = 0; i < MAXJOY; i++) {
         if (!joys[i] || b_turn.axis < 0 || b_turn.axis >= joy_axes(i) || !bound_to(&b_turn, i)) continue;
+        if (!b_turn.guid[0] && ts_uses_joystick(joys[i])) continue;      /* the unbound default is no wheel on a joystick that IS a stick */
         int v = SDL_JoystickGetAxis(joys[i], b_turn.axis);
         if (!turn_seen[i]) { turn_seen[i] = 1; turn_rest[i] = v; }
         if (!turn_live[i] && (b_turn.guid[0] || abs(v - turn_rest[i]) > 4096)) turn_live[i] = 1;
@@ -157,27 +176,21 @@ static void learn_step(void)
         }
     }
 }
-void s21_input_init(void) { SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK); fakepad_init(); }
+void s21_input_init(void)
+{
+    SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK);
+    ts_init(cs_ctl, CS_NCTL, cfg_save);
+    ts_load_from(eng_cfg_get);
+    fakepad_init();
+}
 
 void s21_input_event(const SDL_Event *e)
 {
+    ts_event(e);
     if (e->type == SDL_JOYDEVICEADDED) joy_open(e->jdevice.which);
     else if (e->type == SDL_JOYDEVICEREMOVED) {
         for (int i = 0; i < MAXJOY; i++) if (joys[i] && SDL_JoystickInstanceID(joys[i]) == e->jdevice.which) { SDL_JoystickClose(joys[i]); joys[i] = NULL; }
     }
-    if (e->type == SDL_CONTROLLERDEVICEADDED) {
-        for (int i = 0; i < 4; i++) if (!pads[i]) { pads[i] = SDL_GameControllerOpen(e->cdevice.which); if (pads[i]) fprintf(stderr, "[INPUT] pad: %s\n", SDL_GameControllerName(pads[i])); break; }
-    } else if (e->type == SDL_CONTROLLERDEVICEREMOVED) {
-        for (int i = 0; i < 4; i++) if (pads[i] && SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(pads[i])) == e->cdevice.which) { SDL_GameControllerClose(pads[i]); pads[i] = NULL; }
-    }
-}
-
-static int pad_btn(SDL_GameControllerButton b) { for (int i = 0; i < 4; i++) if (pads[i] && SDL_GameControllerGetButton(pads[i], b)) return 1; return 0; }
-static int pad_axis(SDL_GameControllerAxis a)          /* the strongest deflection over the pads, -32768..32767 */
-{
-    int best = 0;
-    for (int i = 0; i < 4; i++) if (pads[i]) { int v = SDL_GameControllerGetAxis(pads[i], a); if ((v < 0 ? -v : v) > (best < 0 ? -best : best)) best = v; }
-    return best;
 }
 
 static void ramp(int *v, int dec, int inc)
@@ -187,14 +200,6 @@ static void ramp(int *v, int dec, int inc)
     else if (inc && !dec) *v = *v + 16 > hi ? hi : *v + 16;
     else if (*v < c) *v = *v + 16 > c ? c : *v + 16;     /* springs back */
     else if (*v > c) *v = *v - 16 < c ? c : *v - 16;
-}
-static int stick(int keyv, SDL_GameControllerAxis a, int invert)
-{
-    int p = pad_axis(a);
-    if (p > -6000 && p < 6000) return keyv;
-    if (invert) p = -p;
-    int v = 0x7F + p * 0x40 / 32768;
-    return v < 0x3F ? 0x3F : v > 0xBF ? 0xBF : v;
 }
 
 static s21_inputs cur = { .mcub = 0xFF, .mcuc = 0xFF, .mcuh = 0xFF, .dsw = 0xDF, .an = { 0x7F, 0x7F, 0x7F, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF }, .dial = { 0xFF, 0xFF, 0xFF, 0xFF } };
@@ -206,37 +211,36 @@ void s21_input_update(void)
 {
     fakepad_frame();
     SDL_GameControllerUpdate();
-    const Uint8 *k = SDL_GetKeyboardState(NULL);
-    /* ARROWS DRIVE THE SLED: Cyber Sled is steered like a tank with two levers (AN1 left, AN0 right; a LOWER value is forward --
-     * measured: both held at 0x3F drive up to the wall ahead, both at 0xBF back away). Up/Down = both levers forward/back, Left/Right
-     * = the levers opposite (turn on the spot; with Up/Down, a curve), Shift + Left/Right = both levers sideways (strafe). The pad's
-     * D-pad does the same. E/D/S/F and I/K/J/L still work each lever on its own, as on MAME's default keys. */
-    const int up = k[SDL_SCANCODE_UP] || pad_btn(SDL_CONTROLLER_BUTTON_DPAD_UP), dn = k[SDL_SCANCODE_DOWN] || pad_btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN);
-    const int lt = k[SDL_SCANCODE_LEFT] || pad_btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT), rt = k[SDL_SCANCODE_RIGHT] || pad_btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
-    const int shift = k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT];
+    /* THE TANK CONTROLS DRIVE THE SLED: Cyber Sled is steered like a tank with two levers (AN1 left, AN0 right; a LOWER value is
+     * forward -- measured: both held at 0x3F drive up to the wall ahead, both at 0xBF back away). Forward/Back = both levers
+     * forward/back, Turn left/right = the levers opposite (turn on the spot; with Forward/Back, a curve), Strafe + Turn = both levers
+     * sideways. Defaults: the arrows, Shift and the pad's D-pad. The eight stick directions work each lever on its own. */
+    const int up = ts_held(CS_FWD), dn = ts_held(CS_BACK), lt = ts_held(CS_TURN_L), rt = ts_held(CS_TURN_R);
+    const int shift = ts_held(CS_STRAFE);
     const int arrows = up || dn || lt || rt;
+    /* each lever from its own two directions: an axis sets it, a key / button / hat ramps it (an0 right Y, an1 left Y, an2 right X,
+     * an3 left X) */
+    static const int lev[4][2] = { { TS_R_UP, TS_R_DOWN }, { TS_L_UP, TS_L_DOWN }, { TS_R_LEFT, TS_R_RIGHT }, { TS_L_LEFT, TS_L_RIGHT } };
+    double an[4]; bool dig[4];
+    for (int i = 0; i < 4; i++) an[i] = ts_lever(lev[i][0], lev[i][1], &dig[i]);
     if (arrows) {
         /* The menus (course / vehicle / pilot select) read only the levers' SIDEWAYS movement, a battle reads both: master work
          * RAM byte 0x100907 is 0 on the title, attract, course select, round and tutorial screens and 3 while the sled is
          * controllable (measured over a full coin -> Training run, cybsled/PLAN.md). Outside a battle Left/Right move both levers
-         * sideways; in a battle they turn (and Shift + Left/Right strafes). */
+         * sideways; in a battle they turn (and Strafe + Left/Right strafes). */
         const int battle = ((g_s21.mram[0x907 >> 1] & 0xFF) != 0);       /* odd byte = the low half of the big-endian word */
         const int fwd = up - dn, turn = (shift || !battle) ? 0 : lt - rt, side = (shift || !battle) ? rt - lt : 0;
         int l = fwd - turn, r = fwd + turn;                  /* +1 forward .. -1 back, per lever */
         l = l > 1 ? 1 : l < -1 ? -1 : l; r = r > 1 ? 1 : r < -1 ? -1 : r;
         toward(&axis[1], 0x7F - 0x40 * l); toward(&axis[0], 0x7F - 0x40 * r);
         toward(&axis[3], 0x7F + 0x40 * side); toward(&axis[2], 0x7F + 0x40 * side);
-    } else {
-        ramp(&axis[1], k[SDL_SCANCODE_E], k[SDL_SCANCODE_D]);   /* left lever Y */
-        ramp(&axis[3], k[SDL_SCANCODE_S], k[SDL_SCANCODE_F]);   /* left lever X */
-        ramp(&axis[0], k[SDL_SCANCODE_I], k[SDL_SCANCODE_K]);   /* right lever Y */
-        ramp(&axis[2], k[SDL_SCANCODE_J], k[SDL_SCANCODE_L]);   /* right lever X */
-    }
+    } else for (int i = 0; i < 4; i++) ramp(&axis[i], dig[i] && an[i] < 0, dig[i] && an[i] > 0);
     s21_inputs in = cur;
-    in.an[1] = (uint8_t)stick(axis[1], SDL_CONTROLLER_AXIS_LEFTY, 0);
-    in.an[3] = (uint8_t)stick(axis[3], SDL_CONTROLLER_AXIS_LEFTX, 0);
-    in.an[0] = (uint8_t)stick(axis[0], SDL_CONTROLLER_AXIS_RIGHTY, 0);
-    in.an[2] = (uint8_t)stick(axis[2], SDL_CONTROLLER_AXIS_RIGHTX, 0);
+    for (int i = 0; i < 4; i++) {                        /* an axis out of its deadzone wins over the keys, as a pad's stick did */
+        int v = axis[i];
+        if (!dig[i] && an[i] != 0) { v = 0x7F + (int)lround(an[i] * 0x40); v = v < 0x3F ? 0x3F : v > 0xBF ? 0xBF : v; }
+        in.an[i] = (uint8_t)v;
+    }
     /* the wheel and pedals (analog; they win over the keys / pad only while they are off their rest) */
     if (!bind_loaded) { bind_loaded = 1; bind_load("joy_turn", &b_turn); bind_load("joy_gas", &b_gas); bind_load("joy_brake", &b_brake); }
     SDL_JoystickUpdate();
@@ -245,21 +249,16 @@ void s21_input_update(void)
         int on; const double w = raw_turn(&on), t = raw_pedal(&b_gas) - raw_pedal(&b_brake);   /* w: right +; t: forward + */
         if (on || t != 0) {
             const int battle = ((g_s21.mram[0x907 >> 1] & 0xFF) != 0);
-            const int shift_k = k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT];
-            const double turn = (shift_k || !battle) ? 0 : w, side = (shift_k || !battle) ? w : 0;
+            const double turn = (shift || !battle) ? 0 : w, side = (shift || !battle) ? w : 0;
             double l = t + turn, r = t - turn;                     /* +1 forward .. -1 back, per lever */
             l = l > 1 ? 1 : l < -1 ? -1 : l; r = r > 1 ? 1 : r < -1 ? -1 : r;
             in.an[1] = (uint8_t)(0x7F - (int)(0x40 * l)); in.an[0] = (uint8_t)(0x7F - (int)(0x40 * r));
             if (side != 0) { in.an[3] = (uint8_t)(0x7F + (int)(0x40 * side)); in.an[2] = in.an[3]; }
         }
     }
-    const int gun = k[SDL_SCANCODE_LCTRL] || k[SDL_SCANCODE_Z] || pad_btn(SDL_CONTROLLER_BUTTON_A) || pad_axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000;
-    const int missile = k[SDL_SCANCODE_LALT] || k[SDL_SCANCODE_X] || pad_btn(SDL_CONTROLLER_BUTTON_B) || pad_axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000;
-    const int view = k[SDL_SCANCODE_SPACE] || k[SDL_SCANCODE_C] || pad_btn(SDL_CONTROLLER_BUTTON_Y);
-    const int coin = k[SDL_SCANCODE_5] || pad_btn(SDL_CONTROLLER_BUTTON_BACK);
-    const int start = k[SDL_SCANCODE_1] || k[SDL_SCANCODE_RETURN] || pad_btn(SDL_CONTROLLER_BUTTON_START);
-    const int service = k[SDL_SCANCODE_9] || pad_btn(SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
-    const int test = k[SDL_SCANCODE_F2];
+    const int gun = ts_held(CS_GUN), missile = ts_held(CS_MISSILE), view = ts_held(CS_VIEW);
+    const int coin = ts_held(CS_COIN), start = ts_held(CS_START), service = ts_held(CS_SERVICE);
+    const int test = SDL_GetKeyboardState(NULL)[SDL_SCANCODE_F2];
     if (test && !test_prev) { test_on = !test_on; fprintf(stderr, "[INPUT] test switch %s\n", test_on ? "ON" : "OFF"); }
     test_prev = test;
     in.mcuh = (uint8_t)(0xFF & ~(gun ? 0x20 : 0) & ~(missile ? 0x08 : 0) & ~(view ? 0x02 : 0));
@@ -282,35 +281,50 @@ void s21_input_neutral(void)
     s21_io_set_inputs(&in);
 }
 
-/* the Controls page: the bindings (fixed for now) and the two cabinet switches, so a pad reaches them */
-static const char *rows[][2] = {
-    { "Drive (both levers)", "arrows, Shift+Left/Right strafe, pad D-pad" }, { "Left lever", "E/D/S/F, pad left stick" }, { "Right lever", "I/K/J/L, pad right stick" },
-    { "Gun", "Ctrl / Z, pad A or RT" }, { "Missile", "Alt / X, pad B or LT" }, { "Viewport", "Space / C, pad Y" },
-    { "Coin / Start", "5 / 1 or Enter, pad Back / Start" }, { "Test switch", "" }, { "Service button", "9, pad LB" },
-    { "Wheel (turn)", "" }, { "Gas pedal", "" }, { "Brake pedal", "" },
-};
-static int nrows(void) { return (int)(sizeof rows / sizeof rows[0]); }
-static bool has_value(int r) { return r == 7 || r >= 9; }
+/* the Controls page: every control (twin_stick.c), the axis deadzone, the Test switch, the wheel and pedals, a reset */
+enum { P_DEADZONE = CS_NCTL, P_TEST, P_WHEEL, P_GAS, P_BRAKE, P_RESET, P_N };
+static int nrows(void) { return P_N; }
+static bool has_value(int r) { return r != P_RESET; }
+static bool capture_cb(const SDL_Event *e, void *u) { (void)u; return ts_capture_event(e); }
 static void text(int r, char *l, size_t ln, char *v, size_t vn)
 {
-    snprintf(l, ln, "%s", rows[r][0]);
-    if (r == 7) snprintf(v, vn, "%s (F2)", test_on ? "ON" : "OFF");
-    else if (r >= 9) {
-        const rawbind *b = r == 9 ? &b_turn : r == 10 ? &b_gas : &b_brake;
-        if (learn == r - 9) snprintf(v, vn, "%s", r == 9 ? "turn the wheel RIGHT ..." : "press the pedal ...");
+    if (r < CS_NCTL) { snprintf(l, ln, "%s", ts_label(r)); ts_value_text(r, v, vn); return; }
+    switch (r) {
+    case P_DEADZONE: snprintf(l, ln, "Stick deadzone"); snprintf(v, vn, "%d%%", ts_deadzone()); break;
+    case P_TEST: snprintf(l, ln, "Test switch"); snprintf(v, vn, "%s (F2)", test_on ? "ON" : "OFF"); break;
+    case P_RESET: snprintf(l, ln, "Reset all controls"); snprintf(v, vn, "Enter: every row above back to its defaults"); break;
+    default: {
+        const int w = r - P_WHEEL;
+        const rawbind *b = w == 0 ? &b_turn : w == 1 ? &b_gas : &b_brake;
+        snprintf(l, ln, "%s", w == 0 ? "Wheel (turn)" : w == 1 ? "Gas pedal" : "Brake pedal");
+        if (learn == w) snprintf(v, vn, "%s", w == 0 ? "turn the wheel RIGHT ..." : "press the pedal ...");
         else if (b->axis < 0) snprintf(v, vn, "not bound (Enter to bind)");
         else snprintf(v, vn, "axis %d%s (Enter to rebind, Left clears)", b->axis, b->invert ? " inverted" : "");
-    } else snprintf(v, vn, "%s", rows[r][1]);
+    } }
 }
 static void change(int r, int dir)
 {
-    if (r >= 9) {
-        rawbind *b = r == 9 ? &b_turn : r == 10 ? &b_gas : &b_brake;
-        if (dir < 0) { b->axis = r == 9 ? 0 : -1; b->guid[0] = 0; b->invert = b->dir = b->rest = 0; bind_save(r == 9 ? "joy_turn" : r == 10 ? "joy_gas" : "joy_brake", b); learn = -1; }
-        else learn_begin(r - 9);
+    if (r < CS_NCTL) {
+        ts_change(r, dir);
+        if (dir == 0) eng_ui_capture_input(capture_cb, NULL);
         return;
     }
-    if (r == 7) { test_on = !test_on; fprintf(stderr, "[INPUT] test switch %s\n", test_on ? "ON" : "OFF"); }
+    switch (r) {
+    case P_DEADZONE: { int v = ts_deadzone() + (dir ? dir : 1) * 5; if (!dir && v > 50) v = 0; ts_set_deadzone(v); break; }   /* Enter cycles */
+    case P_TEST: test_on = !test_on; fprintf(stderr, "[INPUT] test switch %s\n", test_on ? "ON" : "OFF"); break;
+    case P_RESET: if (dir == 0) for (int c = 0; c < CS_NCTL; c++) ts_change(c, +1); break;
+    default: {
+        const int w = r - P_WHEEL;
+        rawbind *b = w == 0 ? &b_turn : w == 1 ? &b_gas : &b_brake;
+        if (dir < 0) { b->axis = w == 0 ? 0 : -1; b->guid[0] = 0; b->invert = b->dir = b->rest = 0; bind_save(w == 0 ? "joy_turn" : w == 1 ? "joy_gas" : "joy_brake", b); learn = -1; }
+        else if (dir == 0) learn_begin(w);
+    } }
 }
-static const eng_ui_page page = { "Controls", 460, 130, 0, nrows, has_value, NULL, text, change, NULL };
+static void notes(void (*line)(const char *fmt, ...))
+{
+    line("Enter on a row, then press a key or button, push a hat or move a stick (Esc cancels).");
+    line("A key replaces the row's keys, a pad input its pad inputs; a joystick fills one of two joystick slots.");
+    line("Left clears a row, Right puts its defaults back. Two joysticks of the same model are told apart (#2).");
+}
+static const eng_ui_page page = { "Controls", 640, 170, 20, nrows, has_value, NULL, text, change, notes };
 const eng_ui_page *s21_input_page(void) { return &page; }

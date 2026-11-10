@@ -24,6 +24,8 @@
 #include <SDL.h>
 #include "eng_vsync.h"
 #include "eng_gl.h"
+#include "twin_stick.h"
+#include "eng_ffb.h"
 
 #define NK_INCLUDE_FIXED_TYPES
 #define NK_INCLUDE_STANDARD_IO
@@ -73,7 +75,8 @@ static bool kb_moved;                  /* keep the selected row in view after a 
 
 /* ---- the rows ------------------------------------------------------------- */
 enum { D_WIDE, D_DRAW, D_MODE, D_SIZE, D_RES, D_ASPECT, D_SCALING, D_HUD, D_FPS, D_N };
-enum { C_FREEPLAY, C_FFB, C_FFB_DIR, C_STICK, C_N };      /* the Controls page's rows before the bindings */
+enum { C_FREEPLAY, C_FFB, C_FFB_DIR, C_FFB_KEEP, C_FFB_LOG, C_STICK, C_CAR, C_FIXED = C_CAR };   /* the Controls page's rows before the bindings */
+#define C_N (C_FIXED + (g_rr_game->ncars > 0))                 /* + Car, for a game that lists its cars (rr_game_t.cars) */
 enum { O_SERVER, O_NAME, O_HOST, O_FIND, O_CONNECT, O_STATUS, O_LOBBY0 };   /* then, not connected: one row per LAN game found; connected: the players, Ready, Start */
 static int online_rows(void) { return O_LOBBY0 + (rr_net_connected() ? rr_net_roster_count() + 2 : rr_net_found_count()); }
 static int online_self_ready(void)
@@ -83,13 +86,19 @@ static int online_self_ready(void)
         if (rr_net_roster(i, nm, sizeof nm, &rdy, &self) && self) return rdy;
     return 0;
 }
+/* THE CONTROLS PAGE: C_N option rows, the actions, then (twin-stick games) the stick and button rows of twin_stick.c and the stick
+ * deadzone. A twin-stick game's gun / missile / view are its own rows there, so its action rows for them are not shown. */
+static bool act_shown(int a) { return !g_rr_game->twin_stick || (a != RR_SHIFT_DOWN && a != RR_SHIFT_UP && a != RR_VIEW); }
+static int n_acts(void) { int n = 0; for (int a = 0; a < RR_ACT_N; a++) n += act_shown(a); return n; }
+static int act_of(int i) { for (int a = 0; a < RR_ACT_N; a++) if (act_shown(a) && i-- == 0) return a; return -1; }
+static int n_ts(void) { return g_rr_game->twin_stick ? ts_count() + 1 : 0; }          /* + the deadzone row */
 static int nrows(int t)
 {
     switch (t) {
     case T_FILE: return 4;
     case T_DISPLAY: return D_N;
     case T_AUDIO: return 1;
-    case T_CONTROLS: return C_N + RR_ACT_N;
+    case T_CONTROLS: return C_N + n_acts() + n_ts();
     case T_RECORD: return 1;
     case T_ONLINE: return online_rows();
     case T_DEBUG: return g_rr_game->ndebug;
@@ -100,7 +109,7 @@ static int nrows(int t)
 static bool has_value(int t, int r)
 {
     if (t == T_DISPLAY || t == T_AUDIO) return true;
-    if (t == T_CONTROLS) return r < C_N;
+    if (t == T_CONTROLS) return r < C_N || r >= C_N + n_acts();
     if (t == T_RECORD) return true;
     if (t == T_ONLINE) return r == O_SERVER || r == O_NAME || (rr_net_connected() && r == O_LOBBY0 + rr_net_roster_count());   /* server / name / ready */
     return false;
@@ -108,7 +117,6 @@ static bool has_value(int t, int r)
 static bool row_enabled(int t, int r)
 {
     if (t == T_DISPLAY && r == D_SIZE) return g_cfg_winmode == 0;
-    if (t == T_DISPLAY && r == D_ASPECT) return !g_cfg_wide;
     if (t == T_DISPLAY && r == D_HUD) return g_cfg_wide;
     return true;
 }
@@ -127,7 +135,7 @@ static void row_text(int t, int r, char *label, size_t ln, char *value, size_t v
     case T_DISPLAY:
         switch (r) {
         case D_DRAW:    snprintf(label, ln, "Draw distance"); snprintf(value, vn, "%s", rr_host_draw_name(g_cfg_draw)); break;
-        case D_WIDE:    snprintf(label, ln, "Widescreen"); snprintf(value, vn, "%s", g_cfg_wide ? "ON (fill the window)" : "OFF (4:3)"); break;
+        case D_WIDE:    snprintf(label, ln, "Widescreen"); snprintf(value, vn, "%s", !g_cfg_wide ? "OFF (4:3)" : g_cfg_wide_169 ? "ON (16:9)" : "ON (fill the window)"); break;
         case D_MODE:    snprintf(label, ln, "Window mode"); snprintf(value, vn, "%s", wm[g_cfg_winmode]); break;
         case D_SIZE:    snprintf(label, ln, "Window size"); { extern int rr_host_win_w(int), rr_host_win_h(int);
                           snprintf(value, vn, "%dx  (%d x %d)", g_cfg_scale, rr_host_win_w(g_cfg_scale), rr_host_win_h(g_cfg_scale)); } break;
@@ -136,7 +144,8 @@ static void row_text(int t, int r, char *label, size_t ln, char *value, size_t v
                         else if (g_cfg_res_w == 640 && g_cfg_res_h == 480) snprintf(value, vn, "640 x 480  (arcade)");
                         else snprintf(value, vn, "%d x %d", g_cfg_res_w, g_cfg_res_h);
                         break;
-        case D_ASPECT:  snprintf(label, ln, "Aspect ratio"); snprintf(value, vn, "%s", asp[g_cfg_aspect]); break;
+        case D_ASPECT:  snprintf(label, ln, "Aspect ratio");   /* widescreen on: the wide picture's shape; off: how the 4:3 picture is shown */
+                        snprintf(value, vn, "%s", g_cfg_wide ? (g_cfg_wide_169 ? "16:9" : "Fill the window") : asp[g_cfg_aspect]); break;
         case D_SCALING: snprintf(label, ln, "Scaling"); snprintf(value, vn, "%s", sc[g_cfg_scaling]); break;
         case D_FPS:     snprintf(label, ln, "Frame rate"); snprintf(value, vn, "%s", eng_vsync_rate_name(g_cfg_fps)); break;
         case D_HUD:     { extern int g_eng_hud_edges_on; snprintf(label, ln, "Widescreen HUD"); snprintf(value, vn, "%s", g_eng_hud_edges_on ? "at the screen edges" : "original (4:3 centre)"); break; }
@@ -151,9 +160,20 @@ static void row_text(int t, int r, char *label, size_t ln, char *value, size_t v
             else snprintf(value, vn, "OFF");
         }
         else if (r == C_FFB_DIR) { snprintf(label, ln, "FFB direction"); snprintf(value, vn, "%s", g_cfg_ffb_invert ? "reversed" : "normal"); }
+        else if (r == C_FFB_KEEP) { snprintf(label, ln, "FFB keep-alive restart"); snprintf(value, vn, "%s", eng_ffb_restart() ? "ON (every second)" : "OFF (only when stopped)"); }   /* GitHub #73 */
+        else if (r == C_FFB_LOG) { snprintf(label, ln, "FFB log"); snprintf(value, vn, "%s", eng_ffb_log() ? "ON (once a second, to the log)" : "OFF"); }
         else if (r == C_STICK) { snprintf(label, ln, "Stick steering"); snprintf(value, vn, "%s", g_stick_steer_name[g_cfg_stick_steer]); }   /* GitHub #42 */
+        else if (r == C_CAR && g_rr_game->ncars > 0) {
+            const int c = g_rr_game->car_get ? g_rr_game->car_get() : 0;
+            snprintf(label, ln, "Car"); snprintf(value, vn, "%d %s", c + 1, c >= 0 && c < g_rr_game->ncars ? g_rr_game->cars[c] : "?");
+        }
+        else if (r >= C_N + n_acts()) {
+            const int c = r - C_N - n_acts();
+            if (c == ts_count()) { snprintf(label, ln, "Stick deadzone"); snprintf(value, vn, "%d%%", ts_deadzone()); }
+            else { snprintf(label, ln, "%s", ts_label(c)); ts_value_text(c, value, vn); }
+        }
         else {
-            const int a = r - C_N;
+            const int a = act_of(r - C_N);
             if (g_rr_game->act_label && g_rr_game->act_label[a]) snprintf(label, ln, "%s", g_rr_game->act_label[a]);   /* the game's own names */
             else {
             snprintf(label, ln, "%s", rr_input_action_name(a));
@@ -227,6 +247,7 @@ static void stop_edit(void)
 static void close_menu(void)
 {
     open_ = false; dlg_open = false; newroom_open = false; rebinding = -1;
+    if (g_rr_game->twin_stick) ts_capture_event(NULL);
     stop_edit();
 }
 static int cyc(int v, int d, int n) { return ((v + d) % n + n) % n; }
@@ -257,7 +278,7 @@ static void row_change(int t, int r, int dir)
             rr_host_res_get(cyc(i, d, n), &w, &h);
             rr_host_set_res(w, h);
             break; }
-        case D_ASPECT:  rr_host_set_aspect(cyc(g_cfg_aspect, d, 4)); break;
+        case D_ASPECT:  if (g_cfg_wide) rr_host_set_wide_169(!g_cfg_wide_169); else rr_host_set_aspect(cyc(g_cfg_aspect, d, 4)); break;
         case D_SCALING: rr_host_set_scaling(cyc(g_cfg_scaling, d, 3)); break;
         case D_HUD:     { extern int g_eng_hud_edges_on; rr_host_set_hud_edges(!g_eng_hud_edges_on); break; }
         case D_FPS:     { extern void rr_host_set_fps(int); rr_host_set_fps(eng_vsync_rate_step(g_cfg_fps, d)); break; }
@@ -273,8 +294,19 @@ static void row_change(int t, int r, int dir)
         if (r == C_FREEPLAY) rr_host_set_freeplay(!rr_hw_freeplay());
         else if (r == C_FFB) rr_host_set_ffb_strength(dir ? g_cfg_ffb_strength + 10 * dir : (g_cfg_ffb_strength + 10) % 110);   /* Enter cycles */
         else if (r == C_FFB_DIR) rr_host_set_ffb_invert(!g_cfg_ffb_invert);
+        else if (r == C_FFB_KEEP) rr_host_set_ffb_restart(!eng_ffb_restart());
+        else if (r == C_FFB_LOG) rr_host_set_ffb_log(!eng_ffb_log());
         else if (r == C_STICK) rr_host_set_stick_steer(dir ? g_cfg_stick_steer + dir : g_cfg_stick_steer + 1);   /* left/right step, Enter cycles */
-        else if (dir == 0) { rebinding = r - C_N; rr_input_capture_begin(rebinding); }
+        else if (r == C_CAR && g_rr_game->ncars > 0) {
+            const int n = g_rr_game->ncars, c = g_rr_game->car_get ? g_rr_game->car_get() : 0;
+            rr_host_set_car(((dir ? c + dir : c + 1) % n + n) % n);                                       /* left/right step, Enter cycles */
+        }
+        else if (r >= C_N + n_acts()) {
+            const int c = r - C_N - n_acts();
+            if (c == ts_count()) { int v = ts_deadzone() + (dir ? dir : 1) * 5; if (!dir && v > 50) v = 0; ts_set_deadzone(v); }   /* Enter cycles */
+            else ts_change(c, dir);                  /* Enter binds (rr_ui_event hands it the next input), Left clears, Right defaults */
+        }
+        else if (dir == 0) { rebinding = act_of(r - C_N); rr_input_capture_begin(rebinding); }
         break;
     case T_RECORD: rr_host_toggle_record(); break;
     case T_DEBUG: if (dir == 0) { rr_debug_launch(r); close_menu(); } break;
@@ -450,6 +482,7 @@ bool rr_ui_event(SDL_Event *e)
         if (rr_input_capture_event(rebinding, e)) rebinding = -1;
         return true;
     }
+    if (g_rr_game->twin_stick && ts_capturing() >= 0) { ts_capture_event(e); return true; }
     int k = -1;
     if (e->type == SDL_KEYDOWN) {
         const bool rep = e->key.repeat;                  /* held arrows repeat; the rest do not */
@@ -851,6 +884,10 @@ void rr_ui_draw(bool *quit)
             if (nk_button_label(ctx, "100%")) rr_host_set_volume(100);
         } else if (tab == T_CONTROLS) {
             labelf(NK_TEXT_LEFT, "Select, then press key/button or move control (Esc cancels)");
+            if (g_rr_game->twin_stick) {
+                labelf(NK_TEXT_LEFT, "Stick rows: a key replaces the row's keys, a pad input its pad inputs; a joystick fills one of two slots.");
+                labelf(NK_TEXT_LEFT, "Left clears a stick row, Right puts its defaults back. Two joysticks of one model show as #2.");
+            }
         } else if (tab == T_RECORD) {
             labelf(NK_TEXT_LEFT, "Records the cabinet inputs per frame to recordings/;");
             labelf(NK_TEXT_LEFT, "replay with rr --replay FILE. F9 toggles without the menu.");

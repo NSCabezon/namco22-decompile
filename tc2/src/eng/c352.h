@@ -66,6 +66,7 @@ typedef struct {
     uint16_t wave_start;
     uint16_t wave_end;
     uint16_t wave_loop;
+    uint8_t  speech;         /* keyed on from a speech sample bank (g_c352_speech_bank_lo..hi): mixed on the voice gain */
 } c352_voice_t;
 
 typedef struct {
@@ -98,5 +99,12 @@ void c352_generate(c352_t *c, int16_t *out, int n);
  * voice mask overrides that (bit n = voice n is music). Both gains at 100 leave the output bit-identical. */
 extern int      g_c352_gain_music, g_c352_gain_fx;
 extern uint32_t g_c352_music_mask;
+/* ...and the SPEECH on a third gain (Audio > Voice volume, cfg voice_volume; GitHub #46: "character voices are extremely loud"). A voice
+ * in g_c352_speech_mask, or one keyed on from a sample bank in g_c352_speech_bank_lo..hi (hi 0 = none), is speech; each game names its own
+ * in its table (tc2_game_t speech_voices / speech_bank_*: TC2 keeps voice 31 for every call-out, Crisis Zone's are banks 0xDB-0xFF).
+ * cfg speech_voices = a hex mask overrides the voices. Speech wins over the music mask. At 100 the output is unchanged. */
+extern int      g_c352_gain_voice;
+extern uint32_t g_c352_speech_mask;
+extern unsigned g_c352_speech_bank_lo, g_c352_speech_bank_hi;
 
 #endif /* PROPCYCL_C352_H */

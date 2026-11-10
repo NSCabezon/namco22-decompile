@@ -19,9 +19,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct { const char *name; uint32_t size; const char *zname; const char *alt; } eng_rom_t;
+typedef struct { const char *name; uint32_t size; const char *zname; const char *alt; bool optional; } eng_rom_t;
     /* zname: the entry's PATH in the zip when it is not top-level ("dirtdasha/dt2vera.1"); NULL = top-level `name`.
-       alt: an alternate top-level NAME a different MAME set uses for this same chip; NULL = none. */
+       alt: an alternate top-level NAME a different MAME set uses for this same chip; NULL = none.
+       optional: unpacked when the set has it, but a set without it is still complete (a default EEPROM image older MAME sets lack). */
 
 /* the first chip missing from dir (or of the wrong size), NULL when complete */
 const char *eng_romzip_missing(const char *dir, const eng_rom_t *roms, int n);

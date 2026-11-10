@@ -9,6 +9,7 @@ Sets (MAME `namcos22.cpp`, System 22 -- the same board as Rave Racer and Ridge R
   acedrive  Ace Driver: Racing Evolution (World, AD2, 94/10/20)  -> extracted/
   victlap   Ace Driver: Victory Lap (World, ADV2 Ver.B, 96/05/21) -> extracted_victlap/
   cybrcomm  Cyber Commando (Japan, CY1, 94/10/14)                  -> ../cybrcomm/extracted/
+  ridgera2  Ridge Racer 2 (World, RRS2, 94/06/21)                  -> ../ridgera2/extracted/
 
 Every chip is checked by name, size AND CRC32 before anything is written, so a wrong or incomplete set is
 reported instead of producing a game that crashes later. c74.bin (the sound MCU BIOS) comes from namcoc74.zip;
@@ -112,13 +113,42 @@ GAMES = {
         ("gamma_proms", "rr1gam.4d", 0x200, 0x100, 0xb2161bce),
         ("eeprom", "cy1eeprm.9e", 0x0, 0x2000, 0x8432c066),
     ],
+    "ridgera2": [
+        ("maincpu", "rrs2_prgll.4d", 0x3, 0x80000, 0x88199c0f),
+        ("maincpu", "rrs2_prglm.2d", 0x2, 0x80000, 0x8e86f199),
+        ("maincpu", "rrs2_prgum.8d", 0x1, 0x80000, 0x78c360b6),
+        ("maincpu", "rrs2_prguu.6d", 0x0, 0x80000, 0x60d6d4a4),
+        ("mcu", "rrs1data.6r", 0x0, 0x80000, 0xb7063aa8),
+        ("textile", "rrs1cg0.1a", 0x800000, 0x200000, 0x714c0091),
+        ("textile", "rrs1cg1.2a", 0xa00000, 0x200000, 0x836545c1),
+        ("textile", "rrs1cg2.3a", 0xc00000, 0x200000, 0x00e9799d),
+        ("textile", "rrs1cg3.5a", 0xe00000, 0x200000, 0x3858983f),
+        ("textilemap", "rrs1ccrl.5a", 0x0, 0x200000, 0x304a8b57),
+        ("textilemap", "rrs1ccrh.5c", 0x200000, 0x80000, 0xbd3c86ab),
+        ("pointrom", "rrs1pol0.5b", 0x0, 0x80000, 0x9376c384),
+        ("pointrom", "rrs1pol1.4b", 0x80000, 0x80000, 0x094fa832),
+        ("pointrom", "rrs1pom0.5c", 0x100000, 0x80000, 0xb47a7f8b),
+        ("pointrom", "rrs1pom1.4c", 0x180000, 0x80000, 0x27260361),
+        ("pointrom", "rrs1pou0.5d", 0x200000, 0x80000, 0x74d6ec84),
+        ("pointrom", "rrs1pou1.4d", 0x280000, 0x80000, 0xf527caaa),
+        ("c352", "rrs1wav0.10r", 0x0, 0x100000, 0x99d11a2d),
+        ("c352", "rrs1wav1.10p", 0x200000, 0x100000, 0xad28444a),
+        ("c352", "rrs1wav2.10n", 0x100000, 0x100000, 0x6f0d4619),
+        ("c352", "rrs1wav3.10l", 0x300000, 0x100000, 0x106e761f),
+        ("gamma_proms", "rr1gam.2d", 0x0, 0x100, 0xb2161bce),
+        ("gamma_proms", "rr1gam.3d", 0x100, 0x100, 0xb2161bce),
+        ("gamma_proms", "rr1gam.4d", 0x200, 0x100, 0xb2161bce),
+    ],
 }
 
+OPTIONAL = {"eeprom"}                # a default EEPROM image older MAME sets lack: without it the game starts from a blank EEPROM
 EXTRA = {"c74.bin": 0x4000}          # the sound MCU BIOS, from namcoc74.zip (size only). The DSP BIOS c71.bin is built into the engine.
-MAIN_NAME = {"acedrive": "acedriver_main.bin", "victlap": "victlap_main.bin", "cybrcomm": "../cybrcomm/cybrcomm_main.bin"}   # <dir>_main.bin: the shared tools find the image by the game directory name
-DEST_NAME = {"acedrive": "extracted", "victlap": "extracted_victlap", "cybrcomm": "../cybrcomm/extracted"}   # Cyber Commando lives in its own directory
+MAIN_NAME = {"acedrive": "acedriver_main.bin", "victlap": "victlap_main.bin", "cybrcomm": "../cybrcomm/cybrcomm_main.bin",
+             "ridgera2": "../ridgera2/ridgera2_main.bin"}   # <dir>_main.bin: the shared tools find the image by the game directory name
+DEST_NAME = {"acedrive": "extracted", "victlap": "extracted_victlap", "cybrcomm": "../cybrcomm/extracted", "ridgera2": "../ridgera2/extracted"}   # Cyber Commando lives in its own directory
 TITLE = {"acedrive": "Ace Driver: Racing Evolution (World, AD2)", "victlap": "Ace Driver: Victory Lap (World, ADV2 Ver.B)",
-         "cybrcomm": "Cyber Commando (Japan, CY1)"}
+         "cybrcomm": "Cyber Commando (Japan, CY1)",
+         "ridgera2": "Ridge Racer 2 (World, RRS2)"}
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
@@ -175,7 +205,7 @@ def main():
         args = args[2:]
     dest = os.path.join(ROOT, DEST_NAME.get(game, ""))
     if args == ["--check"] and game in GAMES:
-        need = [(n, sz) for _, n, _, sz, _ in GAMES[game]] + list(EXTRA.items())
+        need = [(n, sz) for r, n, _, sz, _ in GAMES[game] if r not in OPTIONAL] + list(EXTRA.items())
         ok = all(os.path.isfile(os.path.join(dest, n)) and os.path.getsize(os.path.join(dest, n)) == sz for n, sz in need)
         return 0 if ok and os.path.isfile(os.path.join(ROOT, MAIN_NAME[game])) else 1
     if game not in GAMES or not args:
@@ -187,7 +217,8 @@ def main():
     for region, name, off, size, crc in chips:
         data = found.get(name.lower())
         if data is None:
-            problems.append(f"  missing:        {name}")
+            if region not in OPTIONAL:
+                problems.append(f"  missing:        {name}")
         elif len(data) != size:
             problems.append(f"  wrong size:     {name} ({len(data)} bytes, expected {size})")
         elif zlib.crc32(data) & 0xFFFFFFFF != crc:
@@ -205,7 +236,7 @@ def main():
         return 1
 
     os.makedirs(dest, exist_ok=True)
-    names = {n for _, n, _, _, _ in chips} | set(EXTRA)
+    names = {n for _, n, _, _, _ in chips if n.lower() in found} | set(EXTRA)
     for n in sorted(names):
         with open(os.path.join(dest, n), "wb") as f:
             f.write(found[n.lower()])

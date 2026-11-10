@@ -212,6 +212,50 @@ static void autoplay(long n, uint16_t *p, unsigned *wheel, unsigned *gas, unsign
     if (n > 2200 && n % 900 < 30) *p |= IN_MOTION;
 }
 
+/* NO TIME LIMIT (Esc menu > Dirt Dash > Time limit; `no_timer` in dd_controls.cfg; DD_NOTIMER=1 for a headless run): race a course without the
+ * clock running out. The race timer is a 16-bit count of FRAMES left, kept in three copies that fall together by one a frame (work RAM
+ * 0xE01C02, 0xE02048, 0xE0A808 -- found by dumping work RAM every 10 frames of a race: 2086 at frame 2400 = 34.8 s, the HUD's TIME 33 at
+ * frame 2500). Each frame a copy that fell by exactly ONE since the last frame is put back; anything else -- a new stage's or a checkpoint's
+ * time, a reset -- goes through, so the timer still shows the stage's time and checkpoints still add to it. Off by default (the arcade);
+ * a headless run never reads the cfg, so every gate is unchanged. */
+#include "eng_ui.h"
+#include "eng_cfg.h"
+static const uint32_t timer_at[] = { 0x1C02, 0x2048, 0xA808 };
+static int no_timer = -1;
+static int dd_no_timer(void)
+{
+    if (no_timer < 0) { const char *e = getenv("DD_NOTIMER"); no_timer = e ? atoi(e) != 0 : eng_cfg_int("no_timer", 0) != 0; }
+    return no_timer;
+}
+static void dd_frame(long n)
+{
+    (void)n;
+    static uint16_t last[3]; static int have;
+    if (!dd_no_timer()) { have = 0; return; }
+    for (int i = 0; i < 3; i++) {
+        uint8_t *m = g_ss22.wram + timer_at[i];
+        const uint16_t v = (uint16_t)(m[0] << 8 | m[1]);
+        if (have && v + 1 == last[i]) { m[0] = (uint8_t)(last[i] >> 8); m[1] = (uint8_t)last[i]; }
+        else last[i] = v;
+    }
+    have = 1;
+}
+static int  pg_rows(void) { return 1; }
+static void pg_text(int r, char *l, size_t ln, char *v, size_t vn)
+{
+    (void)r; snprintf(l, ln, "Time limit");
+    snprintf(v, vn, "%s", dd_no_timer() ? "OFF (race with no clock)" : "ON (as the arcade)");
+}
+static void pg_change(int r, int dir) { (void)r; (void)dir; no_timer = !dd_no_timer(); eng_cfg_set_int("no_timer", no_timer); }
+static void pg_notes(void (*line)(const char *, ...))
+{
+    line("OFF: the TIME counter stops falling, so a race never");
+    line("ends on time -- drive a course as long as you like.");
+    line("Checkpoints and new stages still set the time.");
+}
+static const eng_ui_page dd_page = { "Dirt Dash", 380, 120, 0, pg_rows, NULL, NULL, pg_text, pg_change, pg_notes };
+static const eng_ui_page *dd_menu_page(void) { return &dd_page; }
+
 static const ss22_game game = {
     .name = "Dirt Dash", .tag = "DD", .lname = "dd", .logname = "dirtdash.log", .zip = "dirtdash.zip",
     .out_gain = 2.4,      /* the chip runs ~2.5x hotter than Rave Racer's (raw median RMS 1393 against 563): x6 pinned a race against the limiter; 2.4 lands on Rave Racer's level (~3400 RMS) */
@@ -237,6 +281,8 @@ static const ss22_game game = {
     .autoplay = autoplay,
     .start = start, .start_names = "city, jungle, hill, mountain, snow",
     .pedal_full = { 0x140, 0x100 },
+    .frame = dd_frame,
+    .menu_page = dd_menu_page,
 };
 
 int main(int argc, char **argv) { return ss22_main(argc, argv, &game); }

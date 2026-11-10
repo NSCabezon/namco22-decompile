@@ -11,6 +11,8 @@
 #include "ss22_board.h"
 #include "ss22_gl.h"
 #include "eng_display.h"
+#include "eng_rawptr.h"
+#include "ss22_host.h"
 #include "tc2_game.h"
 
 #define PAD_DEADZONE   4000     /* of 32767: an Xbox pad rests near 3000. 8000 left a quarter of the stick dead, and with the curve below the steering
@@ -397,7 +399,7 @@ static void axis_label(int kind, char *v, size_t vn)
 
 static int nsw(void) { return (game->test_bit ? 1 : 0) + (game->service_bit ? 1 : 0); }
 static int nffb(void) { return game->wheel_motor ? (game->torque.addr ? 4 : 2) : 0; }   /* Force feedback, FFB direction[, FFB centering, FFB road effects] */
-static int gun_flash_on = 1;                                     /* light-gun games: draw the shot flash (gun_flash in the cfg; ss22_gl.c hides it when 0) */
+static int gun_flash_on = 0;                                     /* light-gun games: draw the shot flash (gun_flash in the cfg; ss22_gl.c hides it when 0) */
 static int aim_speed = 150;                                      /* the stick / D-pad / arrow-key crosshair speed, percent (aim_speed in the cfg; was 100, a bit slow) */
 static int aim_dz = 12;                                          /* the sticks' deadzone for aiming, % of full deflection (aim_deadzone in the cfg, as
                                                                    * Time Crisis 1's engine/ss22_input.c; 12% = PAD_DEADZONE exactly) */
@@ -412,7 +414,20 @@ void ss22_input_mouse_step(int dir)                                  /* F7: the 
     char b[64]; if (mouse_speed == 100) snprintf(b, sizeof b, "Mouse speed: Direct"); else snprintf(b, sizeof b, "Mouse speed: %d%%", mouse_speed);
     eng_ui_set_hint(b, 120);
 }
-static int ngun(void) { return game->light_gun ? 5 : 0; }        /* Gun shot flash, Gun border, Aim speed, Mouse speed, Pad aim deadzone */
+static int ngun(void) { return game->light_gun ? 7 : 0; }        /* Gun shot flash, Gun border, Aim speed, Mouse speed, Pad aim deadzone, Gun device, Gun mapping */
+/* THE GUN ON ITS OWN DEVICE (src/eng/eng_rawptr.h): Controls > Gun device picks one pointing device (a light gun is an absolute mouse)
+ * and the game reads it directly instead of the system pointer -- so two copies of the game on one computer, each with its own gun, can
+ * play the arcade's LINK PLAY over the LAN (src/tc2_link.c). gun_device (its id) and gun_map in the cfg; $TC2_GUN_DEVICE / $TC2_GUN_MAP
+ * for a run (a launcher) -- the env's device is written to the cfg only when the cfg has none yet (a second copy's first run). */
+static int gun_map;                                              /* 0 the whole desktop, 1 the window's monitor, 2 the window (ss22_host_rawptr) */
+static const char *gun_map_name[3] = { "whole desktop (as the system pointer)", "this window's monitor", "this window" };
+static void rawptr_lazy_scan(void)                               /* the Controls page is open: look for devices plugged in since, every 3 s */
+{
+    static uint32_t last; const uint32_t now = SDL_GetTicks();
+    if (last && now - last < 3000) return;
+    last = now; eng_rawptr_scan();
+}
+static int gun_device_row(void) { return 5; }
 /* the same setting from the Display page (next to Crosshair): one value, saved as gun_flash */
 int tc2_depth_on(void); void tc2_depth_set(int on);   /* src/tc2_render.c */
 /* the shot flash's strength in percent (gun_flash_pct in the cfg; an old gun_flash=0 still means none): 100 = as the arcade */
@@ -453,6 +468,18 @@ static void pg_text(int r, char *l, size_t ln, char *v, size_t vn)
         return;
     }
     if (r == 4 && ngun()) { snprintf(l, ln, "Pad aim deadzone"); snprintf(v, vn, "%d%%", aim_dz); return; }
+    if (r == gun_device_row() && ngun()) {
+        snprintf(l, ln, "Gun device");
+        rawptr_lazy_scan();
+        const int s = eng_rawptr_selected(); const eng_rawptr_info *in = eng_rawptr_at(s);
+        if (in) {
+            static unsigned seen[32]; const unsigned a = eng_rawptr_activity(s); const int moving = s < 32 && a != seen[s]; if (s < 32) seen[s] = a;
+            snprintf(v, vn, "%d of %d: %s%s%s", s + 1, eng_rawptr_count(), in->name, in->open ? "" : " (cannot read it)", moving ? "  <- moving" : "");
+        } else if (eng_rawptr_count()) snprintf(v, vn, "System pointer (every mouse and gun) -- %d found, Left/Right picks one", eng_rawptr_count());
+        else snprintf(v, vn, "System pointer%s", eng_rawptr_error()[0] ? " (no device can be read: see below)" : " (no pointing device found)");
+        return;
+    }
+    if (r == gun_device_row() + 1 && ngun()) { snprintf(l, ln, "Gun mapping"); snprintf(v, vn, "%s%s", gun_map_name[gun_map], eng_rawptr_selected() < 0 ? "  (with a gun device)" : ""); return; }
     r -= ngun();
     if (r == 0) { snprintf(l, ln, "Reset keyboard defaults"); return; }
     if (r == 1) { snprintf(l, ln, "Stick steering"); snprintf(v, vn, "%s", steer_levels[steer_level].name); return; }
@@ -530,6 +557,20 @@ static void pg_change(int r, int dir)
         eng_cfg_set_int("aim_deadzone", aim_dz);
         return;
     }
+    if (r == gun_device_row() && ngun()) {                         /* Gun device: Left/Right/Enter step through none (the system pointer) and every device */
+        const int n = eng_rawptr_count(); int i = eng_rawptr_selected();
+        i = dir < 0 ? (i <= -1 ? n - 1 : i - 1) : (i >= n - 1 ? -1 : i + 1);
+        const eng_rawptr_info *in = eng_rawptr_at(i);
+        eng_rawptr_select(in ? in->id : "");
+        eng_cfg_set("gun_device", in ? in->id : "");
+        fprintf(stderr, "[INPUT] gun device: %s\n", in ? in->name : "the system pointer");
+        return;
+    }
+    if (r == gun_device_row() + 1 && ngun()) {                     /* Gun mapping: desktop / monitor / window */
+        gun_map = ((dir < 0 ? gun_map + 2 : gun_map + 1)) % 3;
+        eng_cfg_set_int("gun_map", gun_map); ss22_host_set_gun_map(gun_map);
+        return;
+    }
     r -= ngun();
     if (r == 0) {
         for (int a = 0; a < game->n; a++) if (bound[a] != game->actions[a].def) binding_set(a, game->actions[a].def);
@@ -548,6 +589,10 @@ static void pg_notes(void (*line)(const char *fmt, ...))
     line("Esc cancels. Wheel left/right share one axis binding.");
     line("Pedal direction is learned automatically and saved.");
     if (game->wheel_motor) line("Force feedback: the cabinet's wheel motor, on the bound steering wheel.");
+    if (game->light_gun) {
+        if (eng_rawptr_error()[0]) line("Gun device: %s", eng_rawptr_error());
+        else line("Gun device: read one gun on its own (two copies of the game, one gun each: Online > Second player on this computer).");
+    }
     for (int i = 1; i < 3; i++) if (game->notes[i]) line("%s", game->notes[i]);
 }
 
@@ -590,10 +635,19 @@ void ss22_input_init(const ss22_input_game *g)
         aim_speed = eng_cfg_int("aim_speed", 150);
         if (aim_speed < 50) aim_speed = 50;
         if (aim_speed > 300) aim_speed = 300;
-        gun_flash_on = eng_cfg_get("gun_flash_pct") ? eng_cfg_int("gun_flash_pct", 100) : eng_cfg_int("gun_flash", 1) ? 100 : 0;
+        gun_flash_on = eng_cfg_get("gun_flash_pct") ? eng_cfg_int("gun_flash_pct", 0) : eng_cfg_int("gun_flash", 0) ? 100 : 0;   /* OFF by default (2026-10-14, the user's call): a saved choice is kept */
         if (gun_flash_on < 0) gun_flash_on = 0; if (gun_flash_on > 100) gun_flash_on = 100;
         if (getenv("ENG_GUN_FLASH")) { const int e = atoi(getenv("ENG_GUN_FLASH")); gun_flash_on = e <= 0 ? 0 : e == 1 || e > 100 ? 100 : e; }   /* tests: without touching the cfg */
         ss22_gl_set_gun_flash(gun_flash_on);
+        eng_rawptr_scan();                                   /* the gun on its own device (Controls > Gun device) */
+        { const char *gd = getenv("TC2_GUN_DEVICE"), *cf = eng_cfg_get("gun_device");
+          if (gd && *gd) { if (eng_rawptr_select(gd) >= 0 && !cf) eng_cfg_set("gun_device", eng_rawptr_selected_id()); }
+          else if (cf && *cf) eng_rawptr_select(cf);
+          if (eng_rawptr_selected() >= 0) fprintf(stderr, "[INPUT] gun device: %s (%s)\n", eng_rawptr_at(eng_rawptr_selected())->name, eng_rawptr_selected_id());
+          else if ((gd && *gd) || (cf && *cf)) fprintf(stderr, "[INPUT] gun device \"%s\" not found: the system pointer\n", gd && *gd ? gd : cf); }
+        gun_map = getenv("TC2_GUN_MAP") ? atoi(getenv("TC2_GUN_MAP")) : eng_cfg_int("gun_map", 0);
+        if (gun_map < 0 || gun_map > 2) gun_map = 0;
+        ss22_host_set_gun_map(gun_map);
     }
     tc2_depth_set(eng_cfg_int("depth", tc2_game.depth_default));
     { void tc2_picture_load(void); tc2_picture_load(); }
@@ -738,10 +792,17 @@ static float clamp01(float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 static void aim_update(const uint8_t *k)
 {
     static int last_mx = -1, last_my = -1;
-    int mx, my; const uint32_t mb_now = SDL_GetMouseState(&mx, &my);
-    float px, py; bool inside;
-    const bool have = ss22_host_pointer(&px, &py, &inside);
-    if (have && (mx != last_mx || my != last_my)) { aim_src = 1; last_mx = mx; last_my = my; }
+    int mx = 0, my = 0; uint32_t mb_now = 0;
+    float px = 0, py = 0; bool inside = false, have;
+    if (eng_rawptr_selected() >= 0) {                   /* the gun on its own device (Controls > Gun device): its position and buttons, not SDL's */
+        unsigned ev = 0;
+        have = ss22_host_rawptr(&px, &py, &inside, &mb_now, &ev);
+        if (have && ev) aim_src = 1;
+    } else {
+        mb_now = SDL_GetMouseState(&mx, &my);
+        have = ss22_host_pointer(&px, &py, &inside);
+        if (have && (mx != last_mx || my != last_my)) { aim_src = 1; last_mx = mx; last_my = my; }
+    }
     float dx = 0, dy = 0;                               /* the stick and the arrow keys move the crosshair (a full deflection crosses the picture in ~1 s) */
     for (int i = 0; i < MAX_DEV; i++) {
         SDL_GameController *c = pads[i].gc; if (!c) continue;
@@ -775,7 +836,7 @@ static void aim_update(const uint8_t *k)
     g_ss22_gun_x = (uint16_t)(TC2_GUN_X0 + aim_x * TC2_GUN_XW);   /* TIME CRISIS 2's port ranges (src/eng/ss22_board.h; TC1's were 68+626 / 43+241) */
     g_ss22_gun_y = (uint16_t)(TC2_GUN_Y0 + aim_y * TC2_GUN_YH);
     { static int dbg = -1, n; if (dbg < 0) dbg = getenv("SS22_AIMDBG") != NULL;       /* SS22_AIMDBG=1: the aim, once a second */
-      if (dbg && ++n % 60 == 0) fprintf(stderr, "[AIM] src %d on %d  norm %.3f,%.3f  port %u,%u  buttons 0x%X\n", aim_src, aim_on, aim_x, aim_y, g_ss22_gun_x, g_ss22_gun_y, SDL_GetMouseState(NULL, NULL)); } 
+      if (dbg && ++n % 60 == 0) fprintf(stderr, "[AIM] src %d on %d  norm %.3f,%.3f  port %u,%u  buttons 0x%X%s\n", aim_src, aim_on, aim_x, aim_y, g_ss22_gun_x, g_ss22_gun_y, mb_now, eng_rawptr_selected() >= 0 ? " (device)" : ""); } 
 }
 
 static uint16_t swallow;                 /* buttons held since the menu closed: masked until released */
@@ -786,7 +847,7 @@ void ss22_input_update(void)
     const uint8_t *k = SDL_GetKeyboardState(NULL);
     uint16_t p = 0;
     int left = 0, right = 0, pk[2] = { 0, 0 };
-    const uint32_t mb = game->light_gun ? SDL_GetMouseState(NULL, NULL) : 0;
+    const uint32_t mb = !game->light_gun ? 0 : eng_rawptr_selected() >= 0 ? eng_rawptr_buttons() : SDL_GetMouseState(NULL, NULL);
     if (game->light_gun) aim_update(k);
 
     for (int a = 0; a < game->n; a++) {

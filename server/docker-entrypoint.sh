@@ -3,4 +3,4 @@
 exec /usr/local/bin/nmn-server --port "${NMN_PORT:-${RRN1_PORT:-27750}}" --bind 0.0.0.0 \
      --name "${NMN_NAME:-${RRN1_NAME:-Namco 22 online}}" --max-per-ip "${NMN_MAX_PER_IP:-${RRN1_MAX_PER_IP:-8}}" \
      --max-rooms "${NMN_MAX_ROOMS:-${RRN1_MAX_ROOMS:-128}}" --room-ttl-min "${NMN_ROOM_TTL_MIN:-${RRN1_ROOM_TTL_MIN:-10}}" \
-     ${NMN_STATS_FILE:+--stats-file "$NMN_STATS_FILE"} "$@"
+     ${NMN_STATS_FILE:+--stats-file "$NMN_STATS_FILE"} ${NMN_CHAT_FILE:+--chat-file "$NMN_CHAT_FILE"} "$@"

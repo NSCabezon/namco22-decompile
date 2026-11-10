@@ -49,9 +49,10 @@ static int rom_io(const char *dir, uint8_t *dst, size_t n)
 
 const tc2_game_t tc2_game = {
     .title = "Time Crisis 2", .tag = "tc2", .window_title = "Time Crisis II", .mame_set = "timecrs2",
+    .speech_voices = 0x80000000u,                 /* voice 31: every call-out (banks 0x94-0xB8, full volume on all four outputs) */
     .zip_help = "MAME's timecrs2.zip (Time Crisis II, US TSS3 Ver. B)",
     .zips = zips, .nzips = 2, .chips = chips, .nchips = (int)(sizeof chips / sizeof chips[0]),
-    .evo2 = 0,
+    .twin = 1, .evo2 = 0,
     .clock = 169344000u,                          /* BUSCLOCK * 5 */
     .px_num = 200, .px_den = 1323,                /* 25.6 MHz / 169.344 MHz */
     .sub_div = 10,                                /* 16.9344 MHz */

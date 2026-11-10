@@ -11,7 +11,8 @@
  *                          0x02000006 R   "test done": 0, leaves test mode ;  W: point-ROM address = 0, enters test mode
  *                          0x0200000E W   acknowledges the C435 interrupt (IP4)
  *                          0x0200000A/C   point-ROM reads: not modelled yet (the point-ROM chips' word layout) -- still replayed
- *   C422                   0x06400000-0x0640000F  sixteen-bit registers; a write to +2 of 0xFFFB raises its interrupt (IP5), 0x000F acks it
+ *   C422                   0x06400000-0x0640000F  the RS-422 twin-cabinet link: src/tc2_link.c (plain registers + MAME's POST interrupt
+ *                                                 raise / ack unless a link is up)
  *   C412 (frame buffers)   0x0C000004 W flags   0x0C000006 R 0x0002 ("the game uploads")   0x0C000010 / 12 RW the word address (low / high)
  *                          0x0C000014 RW the word at it -- SDRAM A 0x000000, SDRAM B 0x100000 (1M words each), SRAM 0x200000 (128K: the alpha-
  *                          cutout tiles), PCZ RAM 0x220000 (512); a write steps the address, a read does not; 0x0C000018 R toggles bit 0
@@ -26,8 +27,8 @@
 #include "tc2_host.h"
 #include "tc2_game.h"
 
+extern uint16_t c412_flags, c412_bank;
 static struct { uint16_t adr; uint32_t ptrom_adr; int test_mode; uint16_t ram[0x10000]; } c417;
-static uint16_t c422[8];
 static struct { uint16_t sdram_a[0x100000], sdram_b[0x100000], sram[0x20000], pczram[0x200]; uint32_t adr; uint16_t status; } c412;
 static struct { uint16_t dram_a[0x40000], dram_b[0x40000], sram[0x8000]; uint32_t adr; } c421;
 static uint16_t *c412_at(uint32_t a)
@@ -77,7 +78,7 @@ int tc2_chips_read(uint32_t p, int size, uint32_t *v)
     case 0x0C400006u: *v = (uint16_t)c421.adr; return 1;
     case 0x0E800000u: *v = 3; return 1;                     /* MAME sub_comm_status_r: the RS-232 link to the sub-board, always ready */
     }
-    if (p >= 0x06400000u && p <= 0x0640000Fu) { *v = c422[(p - 0x06400000u) >> 1]; return 1; }
+    if (p >= 0x06400000u && p <= 0x0640000Fu) { int tc2_c422_read(unsigned, uint32_t *); return tc2_c422_read((p - 0x06400000u) >> 1, v); }   /* src/tc2_link.c */
     return 0;
 }
 
@@ -91,14 +92,16 @@ int tc2_chips_write(uint32_t p, int size, uint32_t v)
     case 0x02000006u: c417.ptrom_adr = 0; c417.test_mode = 1; return 1;
     case 0x02000008u: c417.ram[c417.adr] = (uint16_t)v; return 1;
     case 0x0200000Eu: cause_set(TC2_SRC_C435, 0); return 1;
-    case 0x0C000004u: return 1;                             /* C412 flags (bit 0: CZ on) */
+    case 0x0C000004u: c412_flags = (uint16_t)v; return 1;   /* C412 flags (bit 0: CZ on -- the depth fog, src/tc2_render.c) */
+    case 0x0C000000u: c412_bank = (uint16_t)v; return 0;    /* (unmapped in MAME; still falls through as before) bit 2: the PCZ half the game
+                                                             * just filled and makes live (Angler King 0x8007CDD0) */
     case 0x0C000010u: c412.adr = (c412.adr & 0xFFFF0000u) | (v & 0xFFFFu); return 1;
     case 0x0C000012u: c412.adr = (c412.adr & 0x0000FFFFu) | (v & 0xFFFFu) << 16; return 1;
     case 0x0C000014u: {
         uint16_t *m = c412_at(c412.adr);
         if (c412.adr >= 0x220000u && c412.adr < 0x220200u) {     /* $TC2_PCZLOG: every PCZ write that changes the table */
             static int dbg = -1; if (dbg < 0) dbg = getenv("TC2_PCZLOG") != NULL;
-            if (dbg && m && *m != (uint16_t)v) { extern uint32_t rr_frame; fprintf(stderr, "[PCZ] frame %u: [%03X] %04X -> %04X\n", rr_frame, c412.adr & 0x1FF, *m, (unsigned)(uint16_t)v); }
+            if (dbg && m && *m != (uint16_t)v) { extern uint32_t rr_frame, rr_pc; fprintf(stderr, "[PCZ] frame %u pc %08X: [%03X] %04X -> %04X\n", rr_frame, rr_pc, c412.adr & 0x1FF, *m, (unsigned)(uint16_t)v); }
         }
         if (m) *m = (uint16_t)v; c412.adr++; return 1; }
     case 0x0C400000u: { uint16_t *m = c421_at(c421.adr); if (m) *m = (uint16_t)v; else c421.adr += 2; return 1; }
@@ -106,9 +109,7 @@ int tc2_chips_write(uint32_t p, int size, uint32_t v)
     case 0x0C400006u: c421.adr = (c421.adr & 0xFFFF0000u) | (v & 0xFFFFu); return 1;
     }
     if (p >= 0x06400000u && p <= 0x0640000Fu) {
-        const unsigned k = (p - 0x06400000u) >> 1;
-        if (k == 1) { if (v == 0xFFFBu) cause_set(TC2_SRC_C422, 1); else if (v == 0x000Fu) cause_set(TC2_SRC_C422, 0); }
-        c422[k] = (uint16_t)v;
+        void tc2_c422_write(unsigned, uint16_t); tc2_c422_write((p - 0x06400000u) >> 1, (uint16_t)v);   /* src/tc2_link.c: the C422 */
         return 1;
     }
     return 0;
@@ -123,7 +124,7 @@ int tc2_chips_load(const char *path)
     FILE *f = fopen(path, "r"); if (!f) return 0;
     char name[32]; int n = 0;
     while (fscanf(f, "%31s", name) == 1) {
-        if (!strcmp(name, "c422")) { unsigned k, v; if (fscanf(f, "%u %x", &k, &v) == 2 && k < 8) c422[k] = (uint16_t)v; }
+        if (!strcmp(name, "c422")) { unsigned k, v; void tc2_c422_load(unsigned, uint16_t); if (fscanf(f, "%u %x", &k, &v) == 2 && k < 8) tc2_c422_load(k, (uint16_t)v); }
         else if (!strcmp(name, "c417_test")) { if (fscanf(f, "%d", &c417.test_mode) != 1) break; }
         else if (!strcmp(name, "c417_adr")) { unsigned v; if (fscanf(f, "%x", &v) == 1) c417.adr = (uint16_t)v; }
         else if (!strcmp(name, "c417_ram")) {
@@ -139,3 +140,6 @@ int tc2_chips_load(const char *path)
 }
 
 uint16_t *tc2_c412_pcz(void) { return c412.pczram; }
+uint16_t c412_flags, c412_bank;                         /* the depth fog's switches (written above) */
+int tc2_c412_cz_on(void) { return c412_flags & 1; }
+const uint16_t *tc2_c412_pcz_live(void) { return c412.pczram + ((c412_bank & 4) ? 0x100 : 0); }   /* the 256-entry half in use */

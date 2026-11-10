@@ -1,5 +1,5 @@
-PROP CYCLE, RAVE RACER, TOKYO WARS, DIRT DASH, TIME CRISIS, ACE DRIVER, CYBER COMMANDO, CYBER SLED and TIME CRISIS 2
-======================================================================================================================
+PROP CYCLE, RAVE RACER, TOKYO WARS, DIRT DASH, TIME CRISIS, ACE DRIVER, CYBER COMMANDO, RIDGE RACER 2, CYBER SLED, TIME CRISIS 2, CRISIS ZONE and ANGLER KING
+==============================================================================================================================================================
 
 1. Put the MAME ROM sets into the "roms" folder (don't unzip them):
      Prop Cycle   propcycl.zip
@@ -10,10 +10,13 @@ PROP CYCLE, RAVE RACER, TOKYO WARS, DIRT DASH, TIME CRISIS, ACE DRIVER, CYBER CO
      Time Crisis  timecris.zip
      Ace Driver   acedrive.zip  and  namcoc74.zip
      Cyber Commando  cybrcomm.zip  and  namcoc74.zip
+     Ridge Racer 2   ridgera2.zip  and  namcoc74.zip
      Cyber Sled   cybsled.zip  and  namcoc67.zip  and  namcoc68.zip
      Time Crisis 2  timecrs2.zip
+     Crisis Zone  crszone.zip
+     Angler King  aking.zip
 
-2. Double-click PropCycle.exe, RaveRacer.exe, TokyoWars.exe, DirtDash.exe, ArmadilloRacing.exe, TimeCrisis.exe, AceDriver.exe, CyberCommando.exe, CyberSled.exe or TimeCrisis2.exe.
+2. Double-click PropCycle.exe, RaveRacer.exe, TokyoWars.exe, DirtDash.exe, ArmadilloRacing.exe, TimeCrisis.exe, AceDriver.exe, CyberCommando.exe, RidgeRacer2.exe, CyberSled.exe, TimeCrisis2.exe, CrisisZone.exe or AnglerKing.exe.
 
 That's it. The first start takes a few seconds while it unpacks the ROMs.
 Nothing needs installing. Keep the "mesa" folder beside PropCycle.exe: it is
@@ -42,9 +45,12 @@ KEYS -- TOKYO WARS
   5             insert a coin           Enter      start
   Left / Right  steer (or A / D)        Up / Down  forward / backward pedal (or W / S)
   X / Z         right / left trigger    9          service
+  Enter (in a battle)  view: chase -> far chase -> cockpit
+  R / F         left stick forward / back   I / K   right stick forward / back (tank style, as Cyber Sled)
   Esc           menu: Display (widescreen, window mode, resolution, frame rate ...),
                 Audio (volume), Controls (rebind the keys)
   F11           fullscreen              F12        screenshot
+  Two joysticks: Esc -> Controls, the rows at the bottom (see TWO STICKS below).
 
 KEYS -- TIME CRISIS
 -------------------
@@ -65,6 +71,15 @@ KEYS -- TIME CRISIS 2
   B / LB is the pedal. Recoil guns: the solenoid goes out as MAME's network output (Hook Of The Reaper, MAMEHooker): copy
   hotr\timecrs2.txt into Hook of the Reaper's defaultLG folder (see hotr\README.txt). Display > Recoil outputs turns it on / off.
   Its settings are in tc2.cfg and its rankings in tc2_backup.nv beside the .exe; the log is tc2.log.
+  CRISIS ZONE: the same keys (crszone.cfg, crszone_backup.nv; the log is tc2.log too).
+
+KEYS -- ANGLER KING
+-------------------
+  The MOUSE (or the arrow keys, or a pad stick) aims the rod.   Left button / Space / Enter   cast and select (starts a game too)
+  R / Left Shift (held)   reel the line in              W / S, PageUp / PageDown   the game's menu up / down
+  5   insert a coin     9 service     F2 the operator's test switch     Esc menu (Subtitles: English for the Japanese captions)
+  A pad: a stick aims, A casts, B / right trigger reels, the shoulders select, Back coin, R3 the menu.
+  Keep aking_subtitles.txt beside AnglerKing.exe. Its settings are in aking.cfg and its records in aking_backup.nv; the log is tc2.log.
 
 KEYS -- DIRT DASH
 -----------------
@@ -103,7 +118,20 @@ KEYS -- CYBER COMMANDO  (Cyber Sled's layout)
   C             change view               F2          the operator's test switch
   Esc           menu (free play, volume, controls)
   F11           fullscreen                F12         screenshot
-  Pad: the left and right sticks are the cabinet's two sticks, A gun, B missile, Y view.
+  Pad: the left and right sticks are the cabinet's two sticks, A / RT gun, B / LT missile, Y view.
+  Two joysticks: Esc -> Controls, Enter on "Left stick up" and push the left joystick forward, and so on
+  for every direction of both sticks and every button (see TWO STICKS below).
+
+KEYS -- RIDGE RACER 2
+---------------------
+  5             insert a coin (a game costs three)
+  X / Up        gas (it also confirms in the menus: there is no Start button)
+  Z / Down      brake          Left / Right  steer
+  A / S         shift down / up
+  F2            the operator's test switch (press again to leave)       9   service
+  Esc           menu: Display (widescreen ...), Audio, Controls; Debug: the game's developer screens
+  F11           fullscreen     F12        screenshot
+  Pad: left stick steer, A gas, B brake, shoulders shift, Back coin, Start or R3 menu.
 
 KEYS -- CYBER SLED
 ------------------
@@ -114,7 +142,20 @@ KEYS -- CYBER SLED
   C             change view               F2          the operator's test switch
   Esc           menu (Online: a battle against a friend over the internet or your network; Debug: developer screens)
   F12           screenshot
-  Pad: the left and right sticks are the two levers, A gun, B missile, Y view. The keys are fixed for now.
+  Pad: the left and right sticks are the two levers, A / RT gun, B / LT missile, Y view.
+  Two joysticks: Esc -> Controls (see TWO STICKS below).
+
+TWO STICKS -- CYBER SLED, CYBER COMMANDO AND TOKYO WARS
+-------------------------------------------------------
+  Tokyo Wars drives the tank the same way: each stick is one track. Both forward = forward, both back =
+  backward, one forward and one back = turn on the spot (half and half = a curve). Its rows are each
+  stick's forward / back, each stick's trigger and a start / view button; the wheel and pedals keep working.
+  Esc -> Controls binds each stick's up / down / left / right, the tank rows and every button.
+  Enter on a row, then press a key or button, push a hat or move a stick (Esc cancels).
+  Left clears a row, Right puts its defaults back.
+  A row takes two keys, two gamepad inputs and two joysticks (e.g. the trigger on each stick for Gun).
+  Two joysticks of the same model show as "#2" for the second one plugged in: plug them in in the
+  same order each time. "Stick deadzone" sets how far a stick moves before it counts.
 
 A game controller works in all of them; a wheel with force feedback works in Rave Racer and Ace Driver.
 
@@ -130,13 +171,14 @@ PROBLEMS?
                                 (World, AM2 Ver.A), "timecris"
                                 (World, TS2 Ver.B), "acedrive" (World, AD2)
                                 plus "namcoc74", "cybrcomm" (Japan, CY1)
+                                plus "namcoc74", "ridgera2" (World, RRS2)
                                 plus "namcoc74", and "cybsled" (World, CY2)
                                 plus "namcoc67" and "namcoc68".
 
 "Windows protected your PC"     Click "More info", then "Run anyway".
                                 (The games are not signed.)
 
-Slow or stuttering              Open the game's log (raveracer.log, tokyowars.log, dirtdash.log, adillor.log, timecris.log, acedriver.log, cybrcomm.log, cybsled.log,
+Slow or stuttering              Open the game's log (raveracer.log, tokyowars.log, dirtdash.log, adillor.log, timecris.log, acedriver.log, cybrcomm.log, ridgeracer2.log, cybsled.log,
                                 propcycl.log beside the .exe). The line "[HOST] OpenGL: ..." says which
                                 graphics chip is used: on a laptop with two of them it must be the
                                 fast one (NVIDIA / AMD card). If not, set it by hand: Windows Settings >
@@ -150,8 +192,13 @@ Black screen or won't start     Update your graphics driver. In a virtual
                                 PropCycle.exe.
 
 Something else                  Each game writes a log beside it, from its
-                                last start: propcycl.log / raveracer.log / tokyowar.log / dirtdash.log / adillor.log / timecris.log / acedriver.log / cybrcomm.log / cybsled.log.
+                                last start: propcycl.log / raveracer.log / tokyowar.log / dirtdash.log / adillor.log / timecris.log / acedriver.log / cybrcomm.log / ridgeracer2.log / cybsled.log.
                                 It says what went wrong.
+
+Settings on the command line (a shortcut's "Target", after the .exe): --set KEY=VALUE for any line of
+the game's .cfg file, for that run only (e.g. --set widescreen=1 --set volume=50), and --fullscreen.
+Time Crisis II and Crisis Zone also take --host, --join, --server ADDR, --name NAME, --instance 2 (a second
+copy on this PC) and --pos X,Y[,SIZE] (its window): two copies side by side for a LAN game.
 
 Keep the folder somewhere you can write to (Downloads, Desktop, Documents --
 not Program Files): the games unpack their ROMs and save settings there.

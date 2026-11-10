@@ -688,3 +688,65 @@ fn stats_count_and_round_trip() {
     assert_eq!(day_of(1_759_795_200), "2025-10-07");
     assert!(Stats::from_text("not a stats file").is_none());
 }
+
+// ---------------------------------------------------------------- chat history --------------------------------------------
+
+fn chatlogs(o: &Out, a: SocketAddr) -> Vec<(String, String)> {
+    to(o, a)
+        .into_iter()
+        .filter(|d| d[4] == ty::CHATLOG)
+        .map(|d| {
+            let p = pl(d);
+            let n = p[4] as usize;
+            (String::from_utf8_lossy(&p[5..5 + n]).into_owned(), String::from_utf8_lossy(&p[5 + n..]).into_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn chat_history_reaches_a_newcomer_after_its_first_message_only() {
+    let mut t = T::new();
+    let (a, b, c) = (addr(1, 1), addr(1, 2), addr(1, 3));
+    t.send(a, &TW.hello("Ann", mode::AUTO, 0, None));
+    t.send(a, &TW.m(ty::CHAT, 0, 1, b"hello there"));
+    t.send(a, &TW.m(ty::CHAT, 0, 1, b"anyone?"));
+    // a newcomer: the WELCOME carries no history (a spoofed HELLO must not be amplified) ...
+    let o = t.send(b, &TW.hello("Bob", mode::AUTO, 0, None));
+    assert!(chatlogs(&o, b).is_empty());
+    // ... its first message proves the address: the game's history, oldest first, once
+    let o = t.send(b, &TW.m(ty::PING, 0, 1, &[0; 8]));
+    assert_eq!(chatlogs(&o, b), vec![("Ann".into(), "hello there".into()), ("Ann".into(), "anyone?".into())]);
+    let o = t.send(b, &TW.m(ty::PING, 0, 1, &[0; 8]));
+    assert!(chatlogs(&o, b).is_empty());
+    // the history is the GAME's, not the room's: a player in a new room of the same game sees it, another game's does not
+    t.send(c, &TW.hello("Cy", mode::CREATE, 0, None));
+    let o = t.send(c, &TW.m(ty::PING, 0, 2, &[0; 8]));
+    assert_eq!(chatlogs(&o, c).len(), 2);
+    let d = addr(1, 4);
+    t.send(d, &CS.hello("Dee", mode::AUTO, 0, None));
+    let o = t.send(d, &CS.m(ty::PING, 0, 1, &[0; 8]));
+    assert!(chatlogs(&o, d).is_empty());
+    // RRN1 members never get it (no CHATLOG in that protocol)
+    let e = addr(1, 5);
+    t.send(e, &hello1("Old"));
+    let o = t.send(e, &m1(ty::PING, 0, &[0; 8]));
+    assert!(chatlogs(&o, e).is_empty() && !has(&o, e, ty::CHATLOG));
+}
+
+#[test]
+fn chat_history_keeps_the_last_lines_and_survives_a_save() {
+    let mut t = T::new();
+    let a = addr(1, 1);
+    t.send(a, &TW.hello("Ann", mode::AUTO, 0, None));
+    for i in 0..CHAT_HISTORY + 7 {
+        t.advance(2100); // under the 5-lines-per-2-s rate limit
+        t.send(a, &TW.m(ty::CHAT, 0, 1, format!("line {}", i).as_bytes()));
+    }
+    let q = &t.h.chat.games[&TW.game];
+    assert_eq!(q.len(), CHAT_HISTORY);
+    assert_eq!(q.front().unwrap().text, "line 7");
+    let back = ChatLog::from_text(&t.h.chat.to_text());
+    assert_eq!(back.games[&TW.game], *q);
+    assert!(!back.dirty && t.h.chat.dirty);
+    assert!(ChatLog::from_text("garbage\nxx\tnot-a-number\tA\tB\n").games.is_empty());
+}

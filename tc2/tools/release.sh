@@ -19,6 +19,7 @@ mkdir -p "$OUT" "$WORK"
 log "export the public tree"
 SRC="$WORK/src"; rm -rf "$SRC"; mkdir -p "$SRC"
 "$TOP/tools/export_public.sh" "$SRC"
+echo "$VER" > "$SRC/VERSION"                       # CMakeLists.txt: the release shown in tc2.log and the window title
 if step src; then tar -C "$WORK" --transform "s|^src|tc2-$VER|" -czf "$OUT/tc2-$VER-src.tar.gz" src; fi
 if step appimage; then
     log "AppImage (ubuntu:22.04)"

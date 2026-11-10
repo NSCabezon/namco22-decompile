@@ -20,6 +20,7 @@
 #include <math.h>
 #include <float.h>
 #include <pthread.h>
+#include <stddef.h>
 #include "tc2_c435.h"
 #include "tc2_frame.h"
 #include "tc2_build.h"
@@ -132,12 +133,16 @@ static void project(pvert *v, int vp_size_x, int vp_size_y, float fov)
     v->y = (float)vp_size_y - fov * v->y;
     v->p[0] = 1.0f / v->p[0];
 }
-static void effects(poly *p, int color_for_alpha, int type_bit21, int h)
+static void effects(poly *p, int color_for_alpha, int type_bit21, int h, int nofog)
 {
+    p->fog = !nofog;                                      /* the bit above the 7-bit palette: no depth fog (Super 22's C-fog gate) */
     p->alpha_enabled = (color_for_alpha & 0x7F) != GFX.alpha_color || type_bit21;
     p->blend = (h >> 10) & 1;
     p->prioverchar = 2;                                   /* text covered by a polygon is drawn again over it (MAME: 2 for polygons) */
 }
+/* the near plane: MAME's 0.0001; $TC2_ZNEAR=<z> tries another (TEST ONLY, Crisis Zone's close-up smoke, crszone/PLAN.md) */
+static float znear(void) { static float z = -1; if (z < 0) { const char *e = getenv("TC2_ZNEAR"); z = e ? (float)atof(e) : 0.0001f; } return z; }
+
 /* project the clipped vertices, find the z-sort key; 0 = dropped */
 static int finish(poly *p, const tc2_render_entry *e, int hsort, uint32_t polyshift, int shift_bit, uint32_t shift_mask_lo, uint32_t shift_sign)
 {
@@ -153,6 +158,16 @@ static int finish(poly *p, const tc2_render_entry *e, int hsort, uint32_t polysh
         p->pv[i].p[1] *= w; p->pv[i].p[2] *= w; p->pv[i].p[3] *= w;
     }
     if (maxz < 0) return 0;
+    /* THE CLOSE-UP SMOKE (2026-10-12, Crisis Zone level 3; the user's report "the screen turns mostly grey"): a TRANSLUCENT polygon whose
+     * projected corner lies beyond +-4096 pixels is not drawn. The explosion smoke there is ~58 screen-facing billboards 1-2 units from the
+     * camera, each a 50% blend: drawn (as MAME draws them -- whose own comment says its near clipping is not the hardware's) they stack to
+     * a solid grey for ~1.5 s. The arcade footage of the same room (youtube 8HKN2ZpNKic, 1112-1118 s) shows a light haze with the room
+     * visible. Chosen against that footage over 10 paired scenes: a near plane at 2 units removed the cover panels; culling only past 16
+     * bits left the grey; this keeps every opaque wall and floor (only blended polygons), the hit flash (a screen fade) and the haze.
+     * The board's real limit is not documented: 4096 is the value that fits. TC2_XYCULL=<n> tries another, 0 = off (MAME's picture). */
+    { static float lim = -2; if (lim == -2) { const char *e2 = getenv("TC2_XYCULL"); lim = e2 ? (float)atof(e2) : 4096.f; }
+      static int all = -1; if (all < 0) all = getenv("TC2_XYCULL_ALL") != NULL;   /* TEST ONLY: opaque polygons too */
+      if (lim > 0 && (all || p->blend)) for (int i = 0; i < p->n; i++) if (p->pv[i].x > lim || p->pv[i].x < -lim || p->pv[i].y > lim || p->pv[i].y < -lim) return 0; }
     int zsort;
     switch (hsort) { case 0: zsort = (int)(minz + 0.5f); break; case 1: zsort = (int)(maxz + 0.5f); break; default: zsort = (int)(0.5f * (minz + maxz) + 0.5f); }
     if (zsort > 0x1FFFFF) zsort = 0x1FFFFF;
@@ -200,8 +215,11 @@ static void render_model(const tc2_render_entry *e)
             }
             offs += 3;
             pv[i].x = x; pv[i].y = y; pv[i].p[0] = z;
-            pv[i].p[1] = (float)(((v1 >> 20) & 0xF00) | ((v2 >> 24) & 0xFF)) + (stencil ? 0 : 0.5f) + e->tx;
-            pv[i].p[2] = (float)(((v1 >> 16) & 0xF00) | ((v3 >> 24) & 0xFF)) + (stencil ? 0 : 0.5f) + e->ty;
+            const float half = (stencil || tc2_game.uv_edge) ? 0 : 0.5f;   /* MAME's half texel; uv_edge: none (the far edge stays inside the tile) */
+            pv[i].p[1] = (float)(((v1 >> 20) & 0xF00) | ((v2 >> 24) & 0xFF)) + half + e->tx;
+            pv[i].p[2] = (float)(((v1 >> 16) & 0xF00) | ((v3 >> 24) & 0xFF)) + half + e->ty;
+            { static int um = -2; static int nlog; if (um == -2) { const char *e2 = getenv("TC2_UVLOG"); um = e2 ? atoi(e2) : -1; }   /* TEST: a model's raw u/v */
+              if (e->model == um && nlog < 64) { nlog++; fprintf(stderr, "[UV] v%d u %u v %u tx %d ty %d stencil %d\n", i, (unsigned)(((v1 >> 20) & 0xF00) | ((v2 >> 24) & 0xFF)), (unsigned)(((v1 >> 16) & 0xF00) | ((v3 >> 24) & 0xFF)), e->tx, e->ty, stencil); } }
             pv[i].p[3] = 64;
             static const uint8_t shifts[4] = { 24, 16, 8, 0 };
             if (lmode <= 1) pv[i].p[3] = (float)((light >> shifts[i & 3]) & 0xFF);
@@ -231,11 +249,14 @@ static void render_model(const tc2_render_entry *e)
             if (c1 >= 0.f && c2 >= 0.f) { if (type & 0x10000) break; continue; }
         }
         if (e->mirror_x) for (int i = 0; i < 4; i++) pv[i].x = -pv[i].x;
+        { static float rej = -2; if (rej == -2) { const char *e2 = getenv("TC2_ZREJECT"); rej = e2 ? (float)atof(e2) : -1; }   /* TEST ONLY: drop a BLENDED polygon with a vertex nearer than <z> */
+          if (rej >= 0 && (h >> 10 & 1)) { int nearv = 0; for (int i = 0; i < ne; i++) nearv |= pv[i].p[0] < rej; if (nearv) { if (type & 0x10000) break; continue; } } }
         poly *p = &GPOLYS[GNPOLY];
-        p->n = zclip(ne, pv, p->pv, 0.0001f);
+        p->n = zclip(ne, pv, p->pv, znear());
+        p->blend = (int)((h >> 10) & 1);                    /* known before finish() (the TC2_XYCULL_BLEND test); effects() sets it again */
         if (p->n >= 3 && finish(p, e, (int)((h & 0x300) >> 8), polyshift, 17, 0x1FFFF, 0xFFFC0000u)) {
             p->stencil = stencil; p->cmode = cmode; p->tbase = tbase; p->color_base = color << 8;
-            effects(p, color, (int)((type >> 21) & 1), (int)h);
+            effects(p, color, (int)((type >> 21) & 1), (int)h, (int)((h >> 31) & 1));
             GNPOLY++;
         }
         if (type & 0x10000) break;
@@ -254,10 +275,11 @@ static void render_immediate(const tc2_render_entry *e)
     }
     if (GNPOLY >= MAX_POLYS) return;
     poly *p = &GPOLYS[GNPOLY];
-    p->n = zclip(ne < 4 ? ne : 4, pv, p->pv, 0.0001f);
+    p->n = zclip(ne < 4 ? ne : 4, pv, p->pv, znear());
+    p->blend = (int)((h >> 10) & 1);
     if (p->n >= 3 && finish(p, e, 2, q->zbias, 16, 0xFFFF, 0xFFFE0000u)) {
         p->stencil = (int)((h >> 11) & 1); p->cmode = 0; p->tbase = 0; p->color_base = (int)(q->pal & 0x7F00);
-        effects(p, (int)((q->pal >> 8) & 0x7F), 0, (int)h);
+        effects(p, (int)((q->pal >> 8) & 0x7F), 0, (int)h, (int)((q->pal >> 15) & 1));
         GNPOLY++;
     }
 }
@@ -294,9 +316,10 @@ static void render_direct(const tc2_render_entry *e)
         p->cmode = (d[2] & 0x70) >> 4;
         p->vp_size_x = e->vp_size_x; p->vp_size_y = e->vp_size_y; p->vp_offset_x = e->vp_offset_x; p->vp_offset_y = e->vp_offset_y;
         p->entry = (int)(e - FS->list.e); p->model = -1;
-        effects(p, (d[2] >> 8) & 0x7F, 0, 0);
+        effects(p, (d[2] >> 8) & 0x7F, 0, 0, (d[2] >> 15) & 1);
         p->blend = 0;
-        p->prioverchar = (p->cmode & 7) == 1 ? 7 : 0;
+        p->prioverchar = 2;                               /* MAME 0.289: render_direct_poly works out (cmode == 1 ? 7 : 0), but render_flush draws EVERY
+                                                          * polygon with prioverchar 2 -- text the polygon covers is drawn again over it (Angler King's NOTICE) */
         GNPOLY++;
     }
 }
@@ -304,7 +327,7 @@ static void render_direct(const tc2_render_entry *e)
 /* ---------------------------------------------------------------- the software fill (the fallback, and the GPU's oracle) */
 static uint32_t *fb;
 static uint8_t *prio;
-static struct { int fade, fadefactor, fadefactor_inv, fr, fg, fb, pfade, pr, pg, pb, alpha, alpha_inv, alpha_pen; } rx;   /* from the frame's C404 */
+static struct { int fade, fadefactor, fadefactor_inv, fr, fg, fb, pfade, pr, pg, pb, alpha, alpha_inv, alpha_pen, fog, cr, cg, cb; const uint8_t *fogtab; } rx;   /* from the frame's C404 */
 static uint32_t tex_lookup(uint32_t pbase, int penshift, int penmask, uint32_t u, uint32_t v, uint8_t *pen)
 {
     const uint32_t id = ((u >> 4) & 0xFF) | ((v << 4) & tileid_mask);
@@ -355,6 +378,12 @@ static void span(const poly *p, int y, int x0, int x1, const float *s, const flo
         uint32_t tx = (uint32_t)(int32_t)(u * ooz), ty = (uint32_t)(int32_t)(v * ooz);
         const int vx = x + clip_left;
         if (vx < clip_left || vx >= clip_right || vx < 0 || vx >= 640) continue;
+        { static int hide = -2; if (hide == -2) { const char *e = getenv("TC2_HIDEMODEL"); hide = e ? atoi(e) : -1; } if (p->model == hide) continue; }   /* TEST: leave one model out */
+        { static int only = -2; if (only == -2) { const char *e = getenv("TC2_ONLYMODEL"); only = e ? atoi(e) : -1; } if (only >= 0 && p->model != only) continue; }   /* TEST: one model only */
+        if (seamtest == 3) {                              /* 3: OVERDRAW of translucent polygons (blend / alpha) -- 0x20 a layer; opaque ones not drawn */
+            static int only = -2; if (only == -2) { const char *e = getenv("TC2_SEAMMODEL"); only = e ? atoi(e) : -1; }   /* only this model */
+            if ((only < 0 ? (p->blend || p->alpha_enabled) : p->model == only)) { if (!(p->stencil && stencil_lookup(tx, ty))) { const uint32_t c = dest[vx] == 0xFF00FF ? 0 : dest[vx] & 0xFF; dest[vx] = (c + 0x20 > 0xFF ? 0xFF : c + 0x20) * 0x010101u; } }
+            continue; }
         if (seamtest) {                                   /* coverage: a stencil cutout is the art's own hole, not a seam -- drawn solid */ dest[vx] = seamtest == 2 ? (uint32_t)(p->entry & 0xFFF) << 12 | ((p->zkey & 0x1FFFFF) >> 9) : (p->zkey & 0xFFFFFF); continue; }   /* 1: depth key; 2: entry << 12 | depth >> 9 */
         if (p->stencil && stencil_lookup(tx, ty)) continue;
         if (tc2_depth_mode) {
@@ -368,6 +397,11 @@ static void span(const poly *p, int y, int x0, int x1, const float *s, const flo
         int r = c >> 16 & 0xFF, g = c >> 8 & 0xFF, b = c & 0xFF;
         int sh = (int)(i * ooz); if (sh < 0) sh = 0; if (sh > 63) sh = 63;
         r = r * sh >> 6; g = g * sh >> 6; b = b * sh >> 6;
+        if (rx.fog && p->fog) {                          /* THE DEPTH FOG: level = the PCZ table at depth (z * 64 = zsort >> 8), toward the C404 fog colour */
+            int cz = (int)(ooz * 64.0f); if (cz < 0) cz = 0; if (cz > 0x1FFF) cz = 0x1FFF;
+            const int ff = rx.fogtab[cz];
+            if (ff) { r = (r * (256 - ff) + rx.cr * ff) >> 8; g = (g * (256 - ff) + rx.cg * ff) >> 8; b = (b * (256 - ff) + rx.cb * ff) >> 8; }
+        }
         if (rx.pfade) { r = r * rx.pr >> 8; g = g * rx.pg >> 8; b = b * rx.pb >> 8; }
         if (rx.fadefactor != 0xFF) { r = (r * rx.fadefactor + rx.fr * rx.fadefactor_inv) >> 8; g = (g * rx.fadefactor + rx.fg * rx.fadefactor_inv) >> 8; b = (b * rx.fadefactor + rx.fb * rx.fadefactor_inv) >> 8; }
         const int use_alpha = rx.alpha != 0xFF && (p->alpha_enabled || pen == rx.alpha_pen);
@@ -485,19 +519,35 @@ static void zfight_report(const tc2_built *b)
 }
 
 /* ---------------------------------------------------------------- building a frame (the geometry stage, shared by both back ends) */
+static int building_mid;                               /* build() is making the in-between frame (motion smoothing): no stateful filters or probes */
 static void build(tc2_built *b)
 {
     BLD = b; FS = &b->fs;
-    gun_flash_filter(&b->fs);
+    if (!building_mid) gun_flash_filter(&b->fs);          /* the in-between frame is a copy of an already-filtered snapshot */
     const tc2_frame_state *fs = &b->fs;
     GFX.pr = c404b(0); GFX.pg = c404b(1); GFX.pb = c404b(2); GFX.alpha_color = c404b(0xF); GFX.alpha_pen = c404b(0x10); GFX.alpha = c404b(0x11);
     GFX.fr = c404b(0x16); GFX.fg = c404b(0x17); GFX.fb = c404b(0x18); GFX.ffactor = c404b(0x19); GFX.fflags = c404b(0x1A);
     GFX.layers = c404b(0x1F);
-    { static long lf = -2, lt; static unsigned long fn; fn++;               /* $TC2_C404FRAMES=from:to -- the C404's registers every frame */
+    GFX.cr = c404b(5); GFX.cg = c404b(6); GFX.cb = c404b(7); GFX.fog = 0;
+    if (fs->cz_on && tc2_game.cz_fog) {                   /* the PCZ half -> a depth-indexed level table (Super 22's recalc_czram, engine/fog_hw.c) */
+        uint8_t *t = b->fogtab; int small_val = 0x2000, small_off = 0, large_val = 0, large_off = 0xFF, prev = 0;
+        memset(t, 0, 0x2000);
+        for (int i = 0; i < 0x100; i++) {
+            int val = fs->pcz[i]; if (val > 0x2000) val = 0x2000;
+            if (i > 0) { if (prev >= val) continue; for (int j = prev; j < val; j++) t[j] = (uint8_t)i; }
+            if (val < small_val) { small_val = val; small_off = i; }
+            if (val > large_val) { large_val = val; large_off = i; }
+            prev = val;
+        }
+        for (int j = 0; j < small_val && j < 0x2000; j++) t[j] = (uint8_t)small_off;
+        for (int j = large_val; j < 0x2000; j++) t[j] = (uint8_t)large_off;
+        for (int j = 0; j < 0x2000 && !GFX.fog; j++) GFX.fog = t[j] != 0;
+    }
+    if (!building_mid) { static long lf = -2, lt; static unsigned long fn; fn++;               /* $TC2_C404FRAMES=from:to -- the C404's registers every frame */
       if (lf == -2) { lf = -1; const char *e = getenv("TC2_C404FRAMES"); if (e) sscanf(e, "%ld:%ld", &lf, &lt); }
       if (lf >= 0 && (long)fn >= lf && (long)fn <= lt) { fprintf(stderr, "[C404] %lu:", fn); for (int k = 0; k < 0x20; k++) fprintf(stderr, " %02X", c404b(k)); fprintf(stderr, " | list %d\n", fs->list.count); } }
     static int dump = -1; if (dump < 0) dump = getenv("TC2_C404DUMP") ? atoi(getenv("TC2_C404DUMP")) : 0;
-    if (dump) { static unsigned long n; if (++n == (unsigned long)dump) { fprintf(stderr, "C404:"); for (int k = 0; k < 0x20; k++) fprintf(stderr, " %04X", c404(k)); fprintf(stderr, "\n"); } }
+    if (dump && !building_mid) { static unsigned long n; if (++n == (unsigned long)dump) { fprintf(stderr, "C404:"); for (int k = 0; k < 0x20; k++) fprintf(stderr, " %04X", c404(k)); fprintf(stderr, "\n"); } }
     int r = c404b(8), g = c404b(9), bl = c404b(10);
     if ((GFX.fflags & 1) && GFX.ffactor) {
         const int s1 = 0xFF - GFX.ffactor, s2 = 0x100 - s1;
@@ -519,9 +569,11 @@ static void build(tc2_built *b)
           q->zkey = (q->zkey & ~0x1FFFFFu) | (uint32_t)z; } }
     for (int i = 0; i < GNPOLY; i++) b->order[i] = (uint32_t)i;
     SORTB = b; qsort(b->order, (size_t)GNPOLY, sizeof b->order[0], cmp_poly);
-    zfight_report(b);
-    { static long want = -2, built; if (want == -2) { const char *e = getenv("TC2_POLYDUMP"); want = e ? atol(e) : -1; }
-      if (++built == want) {      /* $TC2_POLYDUMP=n: every polygon of the n-th built frame in draw order -- where it came from and what it is */
+    if (!building_mid) zfight_report(b);
+    if (!building_mid) { static long want = -2, built; static int by_frame; if (want == -2) { const char *e = getenv("TC2_POLYDUMP"); by_frame = e && *e == 'f'; want = e ? atol(e + by_frame) : -1; }
+      extern uint32_t rr_frame; ++built;
+      if (by_frame ? (long)rr_frame == want : built == want) {   /* $TC2_POLYDUMP=n: every polygon of the n-th built frame in draw order (f<n>: of game frame n) */
+          fprintf(stderr, "[C404] alpha_color %02X alpha_pen %02X alpha %02X\n", GFX.alpha_color, GFX.alpha_pen, GFX.alpha);
           for (int k = 0; k < fs->list.count; k++) { const tc2_render_entry *e = &fs->list.e[k];
               fprintf(stderr, "[ENTRY] %4d type %d model %5d model2 %5d ap %d v %d %d %d  m %d %d %d / %d %d %d / %d %d %d  scale %.3f  blend %d\n", k, e->type, e->model, e->model2,
                       e->absolute_priority, e->v[0], e->v[1], e->v[2], e->m[0], e->m[1], e->m[2], e->m[3], e->m[4], e->m[5], e->m[6], e->m[7], e->m[8], e->scaling, e->model_blend_factor); }
@@ -560,6 +612,7 @@ void tc2_soft_raster(const tc2_built *b, uint32_t *rgba)
     if (rx.fade) { rx.fadefactor = 0xFF - f->ffactor; rx.fadefactor_inv = 0x100 - rx.fadefactor; rx.fr = f->fr; rx.fg = f->fg; rx.fb = f->fb; }
     rx.pfade = f->pr || f->pg || f->pb; rx.pr = f->pr; rx.pg = f->pg; rx.pb = f->pb;
     rx.alpha = 0xFF - f->alpha; rx.alpha_inv = 0x100 - rx.alpha; rx.alpha_pen = f->alpha_pen;
+    rx.fog = f->fog; rx.cr = f->cr; rx.cg = f->cg; rx.cb = f->cb; rx.fogtab = b->fogtab;
     if (seamtest < 0) { const char *e = getenv("TC2_SEAMTEST"); seamtest = e ? atoi(e) : 0; }
     for (int k = 0; k < 640 * 480; k++) rgba[k] = seamtest ? 0xFF00FF : f->bg;
     memset(pri, 0, sizeof pri);
@@ -598,7 +651,121 @@ void tc2_soft_raster(const tc2_built *b, uint32_t *rgba)
 static tc2_built *B[2]; static int front;           /* B[front] = the newest finished frame */
 static uint32_t frames[2][640 * 480];
 static pthread_t worker; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
-static int busy, started, have_frame;
+static int busy, started, have_frame, have_mid;
+static volatile int smooth_n = 1;                      /* in-between frames a game frame: 1 (at 1/2) below 150 pictures/s, 2 (1/3, 2/3) from 150 */
+static int mid_n[2];                                   /* how many MIDS[slot] hold */
+static tc2_built *MIDS[2][2];                             /* motion smoothing: MIDS[front] = halfway from the frame before B[front] to B[front] (the
+                                                        * worker builds MIDS[!front] while the window may still draw MIDS[front]); [k] = fraction k */
+static tc2_built *MID;                                 /* the one being built */
+
+/* ---- MOTION SMOOTHING (Display > Motion smoothing, off by default; motion_smooth in the cfg, $TC2_SMOOTH=0/1 for tests) -------------------
+ * The board makes 59.906 pictures a second; at 120 Hz and up the window can show one MORE picture between two of them. It is made here, not
+ * by the board: a copy of frame N's snapshot whose render-list entries are moved HALFWAY back towards frame N-1 -- each model's view matrix
+ * (rows renormalised), translation, scale and morph factor, each immediate polygon's corners -- then built like any frame. The camera is in
+ * every entry's matrix, so it moves halfway too. An entry is matched with the same model (or immediate polygon kind) by OCCURRENCE: the
+ * k-th entry of a kind in frame N goes with the k-th of that kind in frame N-1. Not moved: an entry with no partner, one that jumped more
+ * than a third of its distance or turned more than ~40 degrees in one frame (a new object reusing a slot, a cut), direct quads and the text
+ * layer (frame N's). A frame where under half the models found a partner or over a quarter of the partners jumped is a cut: the in-between
+ * picture is frame N itself. The cost: frame N is shown half a frame later (the in-between picture goes first). Not the board's picture --
+ * nothing here can be checked against MAME. */
+int tc2_smooth = -1;
+int tc2_smooth_on(void) { if (tc2_smooth < 0) { const char *e = getenv("TC2_SMOOTH"); tc2_smooth = e ? *e == '1' : 0; } return tc2_smooth; }
+void tc2_smooth_set(int on) { tc2_smooth_on(); if (!getenv("TC2_SMOOTH")) tc2_smooth = on != 0; }
+unsigned long tc2_smooth_frames, tc2_smooth_cuts;      /* in-between frames made; of them, cuts (shown as frame N) */
+static uint64_t mid_key(const tc2_render_entry *e)
+{
+    if (e->type == TC2_RE_MODEL)
+        return (uint64_t)1 << 62 | (uint64_t)e->model << 40 | (uint64_t)e->model2 << 24 | (uint64_t)(e->absolute_priority & 7) << 21 | (uint64_t)(e->mirror_x & 1) << 20 | (uint64_t)(e->transpose & 1) << 19 | (uint64_t)((uint16_t)e->vp_size_x ^ (uint16_t)e->vp_size_y << 5) & 0x7FFFF;
+    if (e->type == TC2_RE_IMMEDIATE) return (uint64_t)2 << 62 | (uint64_t)(e->imm.type & 0xFFFF) << 40 | (uint64_t)(e->imm.pal & 0xFFFF) << 24 | (e->imm.h & 0xFFFFFF);
+    return 0;
+}
+static double mid_len3(double x, double y, double z) { return sqrt(x * x + y * y + z * z); }
+/* entry b halfway back towards a; 0 = too far apart to blend (b is kept as it is) */
+static int mid_model(tc2_render_entry *o, const tc2_render_entry *a, const tc2_render_entry *b, double f)
+{
+    const double dv = mid_len3((double)b->v[0] - a->v[0], (double)b->v[1] - a->v[1], (double)b->v[2] - a->v[2]);
+    const double rv = mid_len3(b->v[0], b->v[1], b->v[2]) > mid_len3(a->v[0], a->v[1], a->v[2]) ? mid_len3(b->v[0], b->v[1], b->v[2]) : mid_len3(a->v[0], a->v[1], a->v[2]);
+    if (dv > 64.0 && dv > rv / 3.0) return 0;
+    double m[9];
+    for (int r = 0; r < 3; r++) {
+        const double ax = a->m[3 * r], ay = a->m[3 * r + 1], az = a->m[3 * r + 2], bx = b->m[3 * r], by = b->m[3 * r + 1], bz = b->m[3 * r + 2];
+        const double la = mid_len3(ax, ay, az), lb = mid_len3(bx, by, bz);
+        if (la < 1 || lb < 1) { m[3 * r] = bx; m[3 * r + 1] = by; m[3 * r + 2] = bz; continue; }
+        if ((ax * bx + ay * by + az * bz) / (la * lb) < 0.766) return 0;   /* turned more than ~40 degrees */
+        double x = ax + (bx - ax) * f, y = ay + (by - ay) * f, z = az + (bz - az) * f; const double l = mid_len3(x, y, z), want = la + (lb - la) * f;
+        m[3 * r] = x * want / l; m[3 * r + 1] = y * want / l; m[3 * r + 2] = z * want / l;
+    }
+    for (int k = 0; k < 9; k++) { double t = m[k] < 0 ? m[k] - 0.5 : m[k] + 0.5; o->m[k] = (int16_t)(t > 32767 ? 32767 : t < -32768 ? -32768 : t); }
+    for (int k = 0; k < 3; k++) o->v[k] = (int32_t)llround(a->v[k] + ((double)b->v[k] - a->v[k]) * f);
+    o->scaling = (float)(a->scaling + (b->scaling - a->scaling) * f);
+    o->model_blend_factor = (uint16_t)lround(a->model_blend_factor + ((double)b->model_blend_factor - a->model_blend_factor) * f);
+    return 1;
+}
+static int mid_immediate(tc2_render_entry *o, const tc2_render_entry *a, const tc2_render_entry *b, double f)
+{
+    const int n = (int)((b->imm.type >> 8) & 0xF) < 4 ? (int)((b->imm.type >> 8) & 0xF) : 4;
+    for (int i = 0; i < n; i++) {
+        const double ax = (int32_t)a->imm.x[i], ay = (int32_t)a->imm.y[i], az = (int32_t)a->imm.z[i], bx = (int32_t)b->imm.x[i], by = (int32_t)b->imm.y[i], bz = (int32_t)b->imm.z[i];
+        const double d = mid_len3(bx - ax, by - ay, bz - az), r = mid_len3(bx, by, bz);
+        if (d > 64.0 && d > r / 3.0) return 0;
+    }
+    for (int i = 0; i < n; i++) {
+        o->imm.x[i] = (uint32_t)(int32_t)llround((int32_t)a->imm.x[i] + ((double)(int32_t)b->imm.x[i] - (int32_t)a->imm.x[i]) * f);
+        o->imm.y[i] = (uint32_t)(int32_t)llround((int32_t)a->imm.y[i] + ((double)(int32_t)b->imm.y[i] - (int32_t)a->imm.y[i]) * f);
+        o->imm.z[i] = (uint32_t)(int32_t)llround((int32_t)a->imm.z[i] + ((double)(int32_t)b->imm.z[i] - (int32_t)a->imm.z[i]) * f);
+    }
+    return 1;
+}
+/* the in-between frame of a (frame N-1) and b (frame N) into MID; 0 = none (allocation failed) */
+static int build_mid(tc2_built **slot, const tc2_built *a, const tc2_built *b, double f)
+{
+    if (!*slot && !(*slot = calloc(1, sizeof **slot))) return 0;
+    MID = *slot;
+    enum { NB = 16384 };
+    static int head[NB], tail[NB], nxt[TC2_RENDER_MAX]; static uint64_t keys[TC2_RENDER_MAX]; static uint8_t used[TC2_RENDER_MAX];
+    memcpy(&MID->fs, &b->fs, sizeof MID->fs);
+    for (int k = 0; k < NB; k++) head[k] = tail[k] = -1;
+    const tc2_render_list *la = &a->fs.list;
+    for (int i = 0; i < la->count; i++) {                 /* frame N-1's entries chained per kind, in list order */
+        const uint64_t key = mid_key(&la->e[i]); keys[i] = key; used[i] = 0; nxt[i] = -1;
+        if (!key) continue;
+        const int h = (int)((key * 0x9E3779B97F4A7C15ull) >> 50) & (NB - 1);
+        if (tail[h] < 0) head[h] = i; else nxt[tail[h]] = i;
+        tail[h] = i;
+    }
+    tc2_render_list *lo = &MID->fs.list;
+    int models = 0, matched = 0, jumped = 0;
+    for (int i = 0; i < lo->count; i++) {
+        tc2_render_entry *o = &lo->e[i];
+        const uint64_t key = mid_key(o);
+        if (!key) continue;
+        if (o->type == TC2_RE_MODEL) models++;
+        const int h = (int)((key * 0x9E3779B97F4A7C15ull) >> 50) & (NB - 1);
+        int j = head[h];
+        while (j >= 0 && (used[j] || keys[j] != key)) j = nxt[j];
+        if (j < 0) continue;
+        used[j] = 1;
+        const tc2_render_entry *pa = &la->e[j], *pb = &b->fs.list.e[i];
+        const int ok = o->type == TC2_RE_MODEL ? mid_model(o, pa, pb, f) : mid_immediate(o, pa, pb, f);
+        if (o->type == TC2_RE_MODEL) { matched++; jumped += !ok; }
+    }
+    if (f == 0.5 || f < 0.4) tc2_smooth_frames++;
+    if (models && (matched * 2 < models || jumped * 4 > matched)) {   /* a cut: the in-between picture is frame N */
+        if (f == 0.5 || f < 0.4) tc2_smooth_cuts++;
+        memcpy(&MID->fs.list, &b->fs.list, offsetof(tc2_render_list, e) + sizeof b->fs.list.e[0] * (size_t)b->fs.list.count);
+    }
+    building_mid = 1; build(MID); building_mid = 0;
+    { static const char *dir; static long every = -1; static uint32_t pic[640 * 480];   /* $TC2_MIDSHOTS=dir:every -- the in-between pictures as PPMs (tests) */
+      if (every < 0) { every = 0; const char *e = getenv("TC2_MIDSHOTS"); if (e) { static char d[512]; snprintf(d, sizeof d, "%s", e); char *c = strrchr(d, ':'); if (c) { *c = 0; every = atol(c + 1); dir = d; } } }
+      extern uint32_t rr_frame;
+      if (every > 0 && rr_frame % (uint32_t)every == 0 && (f == 0.5 || f < 0.4)) {
+          tc2_soft_raster(MID, pic);
+          char path[600]; snprintf(path, sizeof path, "%s/m%05u.ppm", dir, rr_frame);
+          FILE *f = fopen(path, "wb");
+          if (f) { fprintf(f, "P6\n640 480\n255\n"); for (int k = 0; k < 640 * 480; k++) { const uint8_t px[3] = { (uint8_t)(pic[k] >> 16), (uint8_t)(pic[k] >> 8), (uint8_t)pic[k] }; fwrite(px, 1, 3, f); } fclose(f); }
+      } }
+    return 1;
+}
 static int soft_raster = 1;                            /* 0 once the window's GPU renderer is up */
 void tc2_render_soft(int on) { soft_raster = on; }
 static void *work(void *u)
@@ -610,8 +777,15 @@ static void *work(void *u)
         pthread_mutex_unlock(&mu);
         build(B[!front]);
         if (soft_raster) tc2_soft_raster(B[!front], frames[!front]);
+        int mid = 0;
+        if (tc2_smooth_on() && have_frame) {                /* the in-between frames: 1/2, or 1/3 and 2/3 */
+            const int n = smooth_n == 2 ? 2 : 1;
+            for (int k = 0; k < n; k++) mid += build_mid(&MIDS[!front][k], B[front], B[!front], n == 1 ? 0.5 : (k + 1) / 3.0);
+            if (mid != n) mid = 0;
+            mid_n[!front] = mid;
+        }
         pthread_mutex_lock(&mu);
-        front = !front; have_frame = 1; busy = 0;
+        front = !front; have_frame = 1; busy = 0; have_mid = mid;
         pthread_cond_broadcast(&cv);
     }
     return NULL;
@@ -651,6 +825,8 @@ void tc2_render_frame_end(void)
     tc2_frame_state *snap = &B[!front]->fs;
     const uint8_t *c4 = tc2_vram_ptr(0x06A08000u), *pal = tc2_vram_ptr(0x06A10000u);
     memcpy(snap->c404, c4, sizeof snap->c404);
+    { const uint16_t *tc2_c412_pcz_live(void); int tc2_c412_cz_on(void);   /* the depth fog's table and switch (src/tc2_chips.c) */
+      memcpy(snap->pcz, tc2_c412_pcz_live(), sizeof snap->pcz); snap->cz_on = tc2_c412_cz_on(); }
     { static int on = -1; if (on < 0) { const char *e = getenv("TC2_GAMMA"); on = !(e && *e == '0'); }   /* TC2_GAMMA=0: as MAME (no gamma) */
       for (int ch = 0; ch < 3; ch++) for (int i = 0; i < 256; i++) snap->gamma[ch][i] = on ? c4[0x200 + 0x200 * ch + 2 * i + 1] : (uint8_t)i;
       int blank = 1; for (int i = 1; i < 256 && blank; i++) blank = !snap->gamma[0][i];
@@ -678,6 +854,10 @@ void tc2_render_frame_end(void)
  * starts a build, so the front slot is stable until the next tc2_render_frame_end */
 const tc2_built *tc2_built_latest(void) { pthread_mutex_lock(&mu); const tc2_built *b = have_frame ? B[front] : NULL; pthread_mutex_unlock(&mu); return b; }
 const tc2_built *tc2_built_latest_wait(void) { if (started) wait_idle(); return tc2_built_latest(); }
+/* motion smoothing: the in-between picture that goes before tc2_built_latest() (NULL: none -- smoothing off, the first frame) */
+const tc2_built *tc2_built_mid(int k) { pthread_mutex_lock(&mu); const tc2_built *b = have_frame && have_mid && k < mid_n[front] ? MIDS[front][k] : NULL; pthread_mutex_unlock(&mu); return b; }
+int tc2_built_mid_count(void) { pthread_mutex_lock(&mu); const int n = have_frame && have_mid ? mid_n[front] : 0; pthread_mutex_unlock(&mu); return n; }
+void tc2_smooth_rate(int pictures_per_s) { smooth_n = pictures_per_s >= 150 ? 2 : 1; }
 /* the newest finished software picture (0x00RRGGBB, 640 x 480) */
 void tc2_frame_rgba(uint32_t *rgba)
 {

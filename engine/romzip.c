@@ -24,7 +24,9 @@ const char *eng_romzip_missing(const char *dir, const eng_rom_t *k_roms, int NRO
     char p[1024];
     for (int i = 0; i < NROMS; i++) {
         snprintf(p, sizeof p, "%s/%s", dir, k_roms[i].name);
-        if (file_size(p) != (long)k_roms[i].size) return k_roms[i].name;
+        const long sz = file_size(p);
+        if (k_roms[i].optional && sz < 0) continue;     /* not in this set: the game does without it */
+        if (sz != (long)k_roms[i].size) return k_roms[i].name;
     }
     return NULL;
 }

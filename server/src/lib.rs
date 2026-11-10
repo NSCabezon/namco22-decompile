@@ -15,9 +15,9 @@
 //! NMN2 clients pad HELLO and ROOMS so their answers fit), under a global cap; a rejection is a short reply with no roster;
 //! one IP holds at most `max_per_ip` slots over all rooms; members are rate limited (all messages, FRAMEs, chat).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MAGIC1: &[u8; 4] = b"RRN1";
 pub const MAGIC2: &[u8; 4] = b"NMN2";
@@ -57,6 +57,67 @@ pub mod ty {
     pub const ROOMLIST: u8 = 0x10;
     pub const RENAME: u8 = 0x11;
     pub const DELROOM: u8 = 0x12;
+    /// s->c: one line of the game's CHAT HISTORY (`age_s u32, name_len u8, name, text`), oldest first, sent once to a member after
+    /// its first message (its address proven). Clients that do not know it ignore it (the contract).
+    pub const CHATLOG: u8 = 0x13;
+}
+
+/// Chat lines kept per game (sent to every new member, saved with `--chat-file`).
+pub const CHAT_HISTORY: usize = 50;
+
+/// One line of a game's chat history.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChatLine {
+    pub unix: u64,
+    pub name: String,
+    pub text: String,
+}
+
+/// The chat history of every game: what `--chat-file` holds, one line per chat line, `game TAB unix-seconds TAB name TAB text`
+/// (names and texts have no control characters, so no tabs or newlines).
+#[derive(Default)]
+pub struct ChatLog {
+    pub games: HashMap<[u8; 2], VecDeque<ChatLine>>,
+    pub dirty: bool,
+}
+impl ChatLog {
+    pub fn push(&mut self, g: [u8; 2], line: ChatLine) {
+        let q = self.games.entry(g).or_default();
+        q.push_back(line);
+        while q.len() > CHAT_HISTORY {
+            q.pop_front();
+        }
+        self.dirty = true;
+    }
+    pub fn to_text(&self) -> String {
+        let mut keys: Vec<&[u8; 2]> = self.games.keys().collect();
+        keys.sort();
+        let mut t = String::new();
+        for g in keys {
+            for l in &self.games[g] {
+                t.push_str(&format!("{}\t{}\t{}\t{}\n", gname(*g), l.unix, l.name, l.text));
+            }
+        }
+        t
+    }
+    pub fn from_text(t: &str) -> ChatLog {
+        let mut c = ChatLog::default();
+        for line in t.lines() {
+            let f: Vec<&str> = line.splitn(4, '\t').collect();
+            if f.len() != 4 || f[0].len() != 2 {
+                continue;
+            }
+            let g = [f[0].as_bytes()[0], f[0].as_bytes()[1]];
+            if let Ok(unix) = f[1].parse() {
+                c.push(g, ChatLine { unix, name: clean_name(f[2].as_bytes()), text: clean_text(f[3].as_bytes()) });
+            }
+        }
+        c.dirty = false;
+        c
+    }
+}
+fn unix_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 /// Why a HELLO was refused (NMN2 WELCOME byte 6; RRN1 only has its state byte: 1 = racing, else 0).
@@ -94,6 +155,8 @@ pub const GAMES: &[GameLimit] = &[
     GameLimit { id: *b"ad", max_players: 8, max_frame: 256, title: "Ace Driver" },
     GameLimit { id: *b"dd", max_players: 8, max_frame: 256, title: "Dirt Dash" },
     GameLimit { id: *b"tc", max_players: 2, max_frame: 256, title: "Time Crisis" },
+    // Time Crisis 2 (tc2/src/tc2_link.c): the twin cabinets' C422 link -- a gameplay packet is ~250 bytes, 1 KB carries a few
+    GameLimit { id: *b"t2", max_players: 2, max_frame: 1024, title: "Time Crisis 2" },
     GameLimit { id: *b"pc", max_players: 8, max_frame: 256, title: "Prop Cycle" },
 ];
 pub const DEFAULT_MAX_PLAYERS: u8 = 8;
@@ -289,6 +352,7 @@ struct Member {
     rate_n: u32,
     frame_t: Instant,
     frame_n: u32,
+    history_sent: bool,
 }
 
 struct Room {
@@ -456,6 +520,8 @@ pub struct Hub {
     pub n_dropped: u64,
     /// Lifetime statistics (`--stats-file`): None = not kept.
     pub stats: Option<stats::Stats>,
+    /// Every game's recent chat, replayed to new members (`--chat-file` saves it).
+    pub chat: ChatLog,
 }
 
 impl Hub {
@@ -472,6 +538,7 @@ impl Hub {
             n_frames: 0,
             n_dropped: 0,
             stats: None,
+            chat: ChatLog::default(),
         }
     }
     pub fn cfg_mut(&mut self) -> &mut Config {
@@ -717,6 +784,7 @@ impl Hub {
             rate_n: 0,
             frame_t: now,
             frame_n: 0,
+            history_sent: legacy, // RRN1 clients have no CHATLOG
         });
         room.empty_since = None;
         room.welcome(from, legacy, free, seq, out);
@@ -884,6 +952,12 @@ impl Hub {
             let (pps, fpps) = (self.cfg.member_pps, self.cfg.frame_pps);
             let m = self.rooms[r].slots[s].as_mut().unwrap();
             m.last_seen = now;
+            let first = !m.history_sent; // its first message after the WELCOME: the address is proven, send the game's history
+            m.history_sent = true;
+            if first {
+                self.send_history(r, s, out);
+            }
+            let m = self.rooms[r].slots[s].as_mut().unwrap();
             if now.duration_since(m.rate_t) >= Duration::from_secs(1) {
                 m.rate_t = now;
                 m.rate_n = 0;
@@ -1081,6 +1155,27 @@ impl Hub {
         let mut pl = vec![s as u8];
         pl.extend_from_slice(text.as_bytes());
         room.broadcast(ty::CHAT, &pl, out); // the sender gets its own line back: what it sees is what was relayed
+        let (g, name) = (room.game, room.slots[s].as_ref().unwrap().name.clone());
+        self.chat.push(g, ChatLine { unix: unix_now(), name, text });
+    }
+
+    /// The game's chat history to one member, oldest first, one CHATLOG each.
+    fn send_history(&self, r: usize, s: usize, out: &mut Out) {
+        let room = &self.rooms[r];
+        let m = match room.slots[s].as_ref() {
+            Some(m) if !m.legacy => m,
+            _ => return,
+        };
+        if let Some(q) = self.chat.games.get(&room.game) {
+            let now = unix_now();
+            for l in q {
+                let mut p = (now.saturating_sub(l.unix).min(u32::MAX as u64) as u32).to_le_bytes().to_vec();
+                p.push(l.name.len() as u8);
+                p.extend_from_slice(l.name.as_bytes());
+                p.extend_from_slice(l.text.as_bytes());
+                out.push((m.addr, room.msg(false, ty::CHATLOG, 0, &p)));
+            }
+        }
     }
 
     /// Timers: liveness drop, GO retransmission, session end, empty-room close, status lines. Call at ~10 Hz or faster.

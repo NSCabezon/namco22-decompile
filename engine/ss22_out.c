@@ -105,6 +105,7 @@ void ss22_out_poll(uint16_t outs)
         send_all(b);
     }
     const uint16_t rising = (uint16_t)(diff & outs & g_ss22_game->recoil_mask);
+    if (rising && dbg) fprintf(stderr, "[OUT] f%u recoil: pad rumble %s\n", (unsigned)rr_frame, rumble_on && ss22_input_pad_rumble() ? "sent" : "OFF");
     if (rising && rumble_on) ss22_input_rumble(0xC000, 0xFFFF, 90);              /* the gun / handle solenoid fired: a short, hard kick */
     if (rising) ss22_input_kick();                                               /* and on a force-feedback wheel (Tokyo Wars' handle) */
     prev = outs;

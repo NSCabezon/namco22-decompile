@@ -30,9 +30,11 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "rr_mem.h"
 #include "rr_hw.h"
 #include "rr_link.h"
+#include "rr_game.h"
 
 #define SCI_RX_BASE  0x1000u    /* RX ring's first C139 word (byte 0x2000 = 0x20012000) */
 
@@ -56,6 +58,9 @@ static rr_link_pkt_t txq[4]; static int txq_r, txq_w;   /* our transmissions (st
 static rr_link_pkt_t rxl[8]; static unsigned rx_pending; static int rx_hand = -1;
 
 static uint32_t n_tx, n_kick, n_rx, n_irq, n_bad;
+/* the game's frame (rr_game_t.link_payload): payload words, then the length word (payload + 2), then the checksum */
+static int plen(void) { return g_rr_game->link_payload ? g_rr_game->link_payload : RR_LINK_PKT_LEN; }
+static int flen(void) { return plen() + 2; }
 
 static uint16_t sci_word(uint32_t idx)
 {
@@ -71,18 +76,22 @@ static void rx_word_put(uint32_t idx, uint16_t v)
 static uint16_t shadow_w(uint32_t off) { return (uint16_t)(g_rr.sci_reg[off] << 8 | g_rr.sci_reg[off + 1]); }
 
 /* The frame the game just finished staging: words 0..39 of the TX ring. */
-static void tx_capture(void)
+static void tx_capture(uint32_t base)
 {
-    if (sci_word(RR_LINK_PKT_LEN) != RR_LINK_FRAME) { n_bad++; return; }   /* length word not 0x28: not a packet */
+    if (sci_word(base + (uint32_t)plen()) != (uint16_t)flen()) { n_bad++;
+        if (getenv("RR_LINK_DUMPBAD") && (n_bad == 5 || n_bad == 200)) { fprintf(stderr, "[LINKBAD] regs"); for (int i = 0; i < 16; i += 2) fprintf(stderr, " %04X", shadow_w(i));
+            fprintf(stderr, "\n[LINKBAD] words"); for (int k = 0; k < 64; k++) fprintf(stderr, " %04X", sci_word(k)); fprintf(stderr, "\n"); }
+        return; }   /* not this board's frame (RR_LINK_DUMPBAD=1: print the registers and the first 64 buffer words of two rejects) */
     rr_link_pkt_t *p = &txq[txq_w];
-    for (int k = 0; k < RR_LINK_PKT_LEN; k++) p->data[k] = (uint8_t)sci_word((uint32_t)k);
+    memset(p->data, 0, sizeof p->data);
+    for (int k = 0; k < plen(); k++) p->data[k] = (uint8_t)sci_word(base + (uint32_t)k);
     p->id = (uint8_t)(p->data[1] & 0xF);
     txq_w = (txq_w + 1) % 4;
     if (txq_w == txq_r) txq_r = (txq_r + 1) % 4;        /* full: drop the oldest */
     n_tx++;
     if (debug == 1 && n_tx == 1) {
         fprintf(stderr, "[LINK] first TX packet, id %d:", p->id);
-        for (int k = 0; k < RR_LINK_PKT_LEN; k++) fprintf(stderr, " %02X", p->data[k]);
+        for (int k = 0; k < plen(); k++) fprintf(stderr, " %02X", p->data[k]);
         fprintf(stderr, "\n");
     }
 }
@@ -121,10 +130,14 @@ void rr_link_reg_write(uint32_t off, int size, uint32_t v)
         if (!(w & 4)) tx_done = false;
     } else if (off == 4) {
         /* rd_link_send's 1 -> 3 toggle: the fill is done = the chip broadcasts it */
-        if (w == 3 && !tx_busy) { tx_capture(); tx_complete(); }
+        if (w == 3 && !tx_busy && !g_rr_game->link_tx_reg6) { tx_capture(0); tx_complete(); }
     } else if (off == 6) {
         if (w & 1) { tx_busy = true; n_kick++; }         /* TX start (FUN_00026c84's peer kick) */
-        else { tx_busy = false; tx_complete(); }             /* MAME: a write of 0 raises "TX done" even when idle (Ace Driver's link init polls it right after clearing reg 6) */
+        else {
+            /* link_tx_reg6 (Ridge Racer 2): the frame was staged at ring word reg 0xE, reg 0xA words long */
+            if (g_rr_game->link_tx_reg6 && tx_busy && shadow_w(0xA)) tx_capture(shadow_w(0xE));
+            tx_busy = false; tx_complete();
+        }             /* MAME: a write of 0 raises "TX done" even when idle (Ace Driver's link init polls it right after clearing reg 6) */
     } else if (off == 0xC) {
         rx_wptr = w & 0xFFF;                             /* the reset's control words resync the ring */
     }
@@ -158,10 +171,10 @@ static void inject(const rr_link_pkt_t *p)
 {
     uint32_t s = rx_wptr;
     unsigned sum = 0;
-    for (int k = 0; k < RR_LINK_PKT_LEN; k++) { rx_word_put(s + (uint32_t)k, p->data[k]); sum += p->data[k]; }
-    rx_word_put(s + RR_LINK_PKT_LEN, RR_LINK_FRAME);
-    rx_word_put(s + RR_LINK_PKT_LEN + 1, (uint16_t)(0x100 | (sum & 0xFF)));
-    rx_wptr = (s + RR_LINK_FRAME) & 0xFFF;
+    for (int k = 0; k < plen(); k++) { rx_word_put(s + (uint32_t)k, p->data[k]); sum += p->data[k]; }
+    rx_word_put(s + (uint32_t)plen(), (uint16_t)flen());
+    rx_word_put(s + (uint32_t)plen() + 1, (uint16_t)(0x100 | (sum & 0xFF)));
+    rx_wptr = (s + (uint32_t)flen()) & 0xFFF;
     g_rr.sci_reg[0xC] = (uint8_t)(rx_wptr >> 8); g_rr.sci_reg[0xD] = (uint8_t)rx_wptr;
     rx_frame = true;
     rr_hw_sci_irq();
@@ -204,7 +217,7 @@ void rr_link_poll(void)
          * solo game's liveness bitmask (WRAM 0x10009104) sees a second cabinet */
         rr_link_pkt_t p;
         if (rr_link_tx_pop(&p)) {
-            int me = g_rr.wram[0x1060] & 7;              /* settings group 3 byte 0 = WRAM 0x10001060 */
+            int me = g_rr.wram[g_rr_game->link_id_addr ? g_rr_game->link_id_addr - 0x10000000u : 0x1060] & 7;   /* this cabinet's number (Rave Racer: settings group 3 byte 0) */
             p.id = (uint8_t)((me + 1) & 7);
             p.data[0] = 0; p.data[1] = p.id;
             rr_link_rx_push(&p);

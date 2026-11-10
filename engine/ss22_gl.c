@@ -39,6 +39,20 @@ static int       qeye;                       /* the eye qbuf's screen x currentl
 static void push_quad(const geo_quad *q, void *user)
 {
     (void)user;
+    /* The guard-band-clipped draw polygon (geo_hw.c, register row 187) in place of rv when the near-clipped polygon saturates -- as
+     * Prop Cycle (src/renderer_3d.c) and Rave Racer (rr_gl.c) draw it. Without it a quad with corners behind the eye kept rv's
+     * clamped +-2^27 px corners and could smear across the whole picture (Tokyo Wars' intro: one flat grey frame in the harbour
+     * shot). ndv < 0: wholly outside the guard band, nothing to draw. ENG_GUARDBAND_OFF=1: the old way (A/B). */
+    static int gb_off = -1;
+    if (gb_off < 0) gb_off = getenv("ENG_GUARDBAND_OFF") != NULL;
+    static geo_quad gq;
+    if (q->ndv != 0 && !gb_off) {
+        if (q->ndv < 0) return;
+        gq = *q;
+        memcpy(gq.rv, q->dv, sizeof(geo_vert) * (size_t)q->ndv);
+        gq.nrv = q->ndv;
+        q = &gq;
+    }
     if (qn == qcap) {
         int nc = qcap ? qcap * 2 : 8192;
         geo_quad *nb = realloc(qbuf, (size_t)nc * sizeof *qbuf);
@@ -153,6 +167,7 @@ void ss22_prepare(const ss22_regs *r)
 
     { static int hold;                                                /* widescreen: is the race HUD up? */
       hud_on = hud_cfg && hud_cfg->marks && eng_hud_marks_up(r->textram, hud_cfg->marks, hud_cfg->n_marks, &hold); }
+    g_tex_budget_paused = hud_cfg && hud_cfg->bake_all_without_hud && !hud_on;     /* attract and menus: no coarse placeholders */
 
     ni = 0; have_spr = false;
     if (!spr_off && g_sprite_tiles && r->spriteram &&
@@ -469,13 +484,51 @@ static void text_hud_scan(const uint8_t *rgba)
             if (is_shade(q)) { memcpy(sr + (size_t)x * 4, q, 4); memset(tr + (size_t)x * 4, 0, 4); }
             else             { memcpy(tr + (size_t)x * 4, q, 4); memset(sr + (size_t)x * 4, 0, 4); }
         }
-        for (int x = 0; x < SPR_W; x++) {               /* the shade behind a text pixel: what its neighbours in the row have */
+    }
+    /* The shade behind each text pixel: what its neighbours in the row have, within 48 px. Where that finds none (GitHub #76: the middle 25 px of the
+     * minimap frame's 118 px top edge -- they stayed unfilled and showed the unshaded jungle as a bright dash at the frame's old place, x 545..569,
+     * y 96..97, every jungle frame with the HUD moved), and only if the HUD run lies INSIDE the shade -- walking out along the row on both sides, past the
+     * HUD's pixels and its 1-2 px drop shadow (translucent black too: copied, it drew a dark line), both reach clean shade, not a transparent pixel --
+     * the nearer of the two. A shade that covers only part of the screen (the right-edge gradient at a race start) stays as it was beside the HUD. */
+    static uint8_t near_hud[SPR_W * SPR_H], tmp[SPR_W * SPR_H];
+    for (long i = 0; i < (long)SPR_W * SPR_H; i++) { const uint8_t *q = rgba + i * 4; tmp[i] = q[3] && !is_shade(q); }
+    for (int y = 0; y < SPR_H; y++)                      /* dilate by 3: along the row, then along the column */
+        for (int x = 0; x < SPR_W; x++) {
+            uint8_t v = 0;
+            for (int k = x - 3; k <= x + 3 && !v; k++) if (k >= 0 && k < SPR_W) v = tmp[y * SPR_W + k];
+            near_hud[y * SPR_W + x] = v;
+        }
+    memcpy(tmp, near_hud, sizeof tmp);
+    for (int y = 0; y < SPR_H; y++)
+        for (int x = 0; x < SPR_W; x++) {
+            uint8_t v = 0;
+            for (int k = y - 3; k <= y + 3 && !v; k++) if (k >= 0 && k < SPR_H) v = tmp[k * SPR_W + x];
+            near_hud[y * SPR_W + x] = v;
+        }
+    for (int y = 0; y < SPR_H; y++) {
+        const uint8_t *row = rgba + (size_t)y * SPR_W * 4;
+        uint8_t *sr = shd_buf + (size_t)y * SPR_W * 4;
+        for (int x = 0; x < SPR_W; x++) {
             const uint8_t *q = row + (size_t)x * 4;
             if (!q[3] || is_shade(q)) continue;
-            for (int d = 1; d <= 48; d++) {
+            bool got = false;
+            for (int d = 1; d <= 48 && !got; d++) {          /* the shade beside it in the row, as it always was */
                 const uint8_t *l = x - d >= 0 ? row + (size_t)(x - d) * 4 : NULL, *r = x + d < SPR_W ? row + (size_t)(x + d) * 4 : NULL;
-                if (l && is_shade(l)) { memcpy(sr + (size_t)x * 4, l, 4); break; }
-                if (r && is_shade(r)) { memcpy(sr + (size_t)x * 4, r, 4); break; }
+                if (l && is_shade(l)) { memcpy(sr + (size_t)x * 4, l, 4); got = true; }
+                else if (r && is_shade(r)) { memcpy(sr + (size_t)x * 4, r, 4); got = true; }
+            }
+            if (got) continue;
+            int src[2] = { -1, -1 };                         /* none within 48 px: is the run inside the shade on BOTH sides of the row? */
+            for (int side = 0; side < 2; side++) {
+                const int step = side ? 1 : -1;
+                int xx = x + step;
+                while (xx >= 0 && xx < SPR_W && row[(size_t)xx * 4 + 3] && !is_shade(row + (size_t)xx * 4)) xx += step;      /* across the HUD */
+                while (xx >= 0 && xx < SPR_W && is_shade(row + (size_t)xx * 4) && near_hud[y * SPR_W + xx]) xx += step;      /* and its drop shadow */
+                if (xx >= 0 && xx < SPR_W && is_shade(row + (size_t)xx * 4)) src[side] = xx;                                 /* clean shade, or none */
+            }
+            if (src[0] >= 0 && src[1] >= 0) {
+                const int xx = x - src[0] <= src[1] - x ? src[0] : src[1];
+                memcpy(sr + (size_t)x * 4, row + (size_t)xx * 4, 4);
             }
         }
     }

@@ -15,6 +15,7 @@
  *   rr <rom_dir> [--frames N] [--dump DIR]    headless run
  */
 #include <SDL.h>
+#include "eng_args.h"
 #include "rr_romzip.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -207,9 +208,38 @@ void rr_debug_launch(int i)
  * change the screen goes in anyway. */
 static void debug_boundary(void)
 {
-    { static int at = -2, idx; if (at == -2) { const char *e = getenv("RR_DEBUG"); at = -1; if (e && sscanf(e, "%d@%d", &idx, &at) != 2) at = -1; }
-      if (at >= 0 && frame == (uint32_t)at) rr_debug_launch(idx); }
+    { static const char *e; static int init;           /* RR_DEBUG=i@frame[,i@frame...]: launch Debug-page entries headlessly */
+      if (!init) { init = 1; e = getenv("RR_DEBUG"); }
+      for (const char *p = e; p && *p; p = strchr(p, ',') ? strchr(p, ',') + 1 : NULL) {
+          int idx, at; if (sscanf(p, "%d@%d", &idx, &at) == 2 && frame == (uint32_t)at) rr_debug_launch(idx);
+      } }
     if (debug_pending < 0 || rr_in_irq) return;
+    if (g_rr_game->debug_dsw) {                         /* a menu behind a DIP switch (rr_game.h debug_dsw) */
+        const rr_debug_t *d = &g_rr_game->debug[debug_pending];
+        if (d->entry == DEBUG_DSW_LEAVE) {
+            g_hw.dsw |= g_rr_game->debug_dsw; debug_pending = -1;
+            fprintf(stderr, "[DEBUG] DIP switch off at frame %u: back to the game\n", frame); return;
+        }
+        if (!debug_test_at) {
+            g_hw.dsw &= ~g_rr_game->debug_dsw;
+            if (windowed) rr_host_set_test(false);      /* the developer menu runs only with the Test switch OFF */
+            else g_hw.inputs |= 0x0400;
+            debug_test_at = frame;
+            fprintf(stderr, "[DEBUG] DIP switch on at frame %u\n", frame);
+            if (!d->entry) debug_pending = -1;
+            return;
+        }
+        if (rr_read(g_rr_game->debug_mode_addr, 2) != g_rr_game->debug_mode ||
+            rr_read(g_rr_game->debug_state_addr, 2) != g_rr_game->debug_menu_state) {
+            if (frame > debug_test_at + 600) { debug_pending = -1; fprintf(stderr, "[DEBUG] the menu never came up\n"); }
+            return;
+        }
+        rr_write(g_rr_game->debug_cursor_addr, 2, (d->entry - 1) / 2);
+        rr_write(g_rr_game->debug_state_addr, 2, d->entry);
+        fprintf(stderr, "[DEBUG] \"%s\" selected (state %u) at frame %u\n", d->name, d->entry, frame);
+        debug_pending = -1;
+        return;
+    }
     if (!debug_test_at) {
         g_hw.inputs &= (uint16_t)~0x0400;               /* the Test switch ON (headless; a window's host keeps it on) */
         if (windowed) rr_host_set_test(true);
@@ -289,6 +319,14 @@ void rr_tick(void)
       for (int i = 0; i < np; i++) if (frame >= pf[i] && frame <= pt[i]) rr_write(pa[i], ps[i], pv[i]); }
     for (int i = 0; i < n_steer; i++) if (frame >= (uint32_t)test_steer[i].at) g_hw.steer = (uint16_t)test_steer[i].value;
     for (int i = 0; i < n_adc; i++) if (frame >= (uint32_t)test_adc[i].at) g_hw.adc[test_adc[i].idx & 3] = (uint8_t)test_adc[i].value;
+    { static long pf = -2; if (pf == -2) { const char *e = getenv("RR_TEST_PLAY"); pf = e ? atol(e) : -1; }   /* RR_TEST_PLAY=F (twin-stick games, headless
+      * tests): from frame F the gun pulses and both sticks turn left / centre / right in turn, so a match runs (with --coin);
+      * RR_TEST_FIREONLY=1 keeps the sticks centred */
+      if (pf >= 0 && frame >= (uint32_t)pf) {
+          if (frame % 20 < 6) g_hw.inputs &= (uint16_t)~0x0001; else g_hw.inputs |= 0x0001;
+          const int t = getenv("RR_TEST_FIREONLY") ? 0 : (int)((frame / 90) % 4);
+          g_hw.adc[0] = (uint8_t)(t == 1 ? 0x47 : t == 3 ? 0xB7 : 0x7F); g_hw.adc[1] = (uint8_t)(t == 1 ? 0xB7 : t == 3 ? 0x47 : 0x7F);
+          g_hw.adc[2] = 0x7F; g_hw.adc[3] = 0x7F; } }
     if (windowed) {
         if (frame % 120 == 0) rr_hw_eeprom_save();     /* the test menu's settings and the records, once the game has changed them */
         do {
@@ -338,6 +376,11 @@ void rr_tick(void)
      * whose handler rewinds the program's cooperative task list (Ace Driver: the pointer at A6-0x7FD0) -- launched before it,
      * the screen's first yield (0x4C6E) read past the end of the list and jumped to 0 */
     debug_boundary();
+    if (g_rr_game->ffb_synth) {                         /* RR_FFBLOG=<file>: the synthesised wheel force per frame (headless never drives a wheel) */
+        static FILE *fl; static int init;
+        if (!init) { init = 1; const char *e = getenv("RR_FFBLOG"); if (e) fl = fopen(e, "w"); }
+        if (fl) fprintf(fl, "%u %.3f %u\n", frame, g_rr_game->ffb_synth(), g_hw.steer);
+    }
     if (dump_dir) {             /* RR_DUMP_EVERY=n (default 60), RR_DUMP_FROM=f: dump cadence */
         static unsigned every, from; static int init;
         if (!init) { const char *e = getenv("RR_DUMP_EVERY"), *f = getenv("RR_DUMP_FROM");
@@ -364,6 +407,7 @@ void rr_win_startup(void);          /* src/rr_win.c */
 #endif
 int main(int argc, char **argv)
 {
+    eng_args_strip(&argc, argv);    /* --set KEY=VALUE: a setting for this run (engine/eng_args.h, GitHub #85) */
 #ifdef _WIN32
     rr_win_startup();               /* the program's folder, raveracer.log, DPI */
 #endif
@@ -430,6 +474,13 @@ int main(int argc, char **argv)
             fprintf(stderr, "[GL] render-dump: %d quads\n", rr_gl_quads());
             return rr_gl_write_ppm(argv[i + 3], 640, 480) ? 0 : 1;
         }
+    static char last_rec[64];                     /* a played session always keeps its latest recording (and the one before): a bug a player
+                                                   * meets can be replayed exactly -- <nv prefix>_last.rec, e.g. rr_last.rec (GitHub #62) */
+    if (windowed && !rec_path && !rep_path) {
+        const char *u = strchr(g_rr_game->nv_file, '_'); const int k = u ? (int)(u - g_rr_game->nv_file) : 2;
+        char prev[64]; snprintf(last_rec, sizeof last_rec, "%.*s_last.rec", k, g_rr_game->nv_file); snprintf(prev, sizeof prev, "%.*s_prev.rec", k, g_rr_game->nv_file);
+        remove(prev); rename(last_rec, prev); rec_path = last_rec;
+    }
     if (rep_path && !rr_input_replay_open(rep_path)) return 2;
     if (rec_path && !rr_input_record_start(rec_path)) return 2;
     g_rr_gl = use_gl < 0 ? (windowed != 0) : use_gl;
@@ -493,13 +544,19 @@ int main(int argc, char **argv)
 #ifdef RR_TRACE
     rr_env_init();                         /* RR_ENV: the trace oracle's environment (dev builds) */
 #endif
-    if (windowed) rr_hw_eeprom_persist(g_rr_game->nv_file);   /* a player's session keeps its settings and records; headless runs never do */
+    if (windowed && !rep_path) rr_hw_eeprom_persist(g_rr_game->nv_file);   /* a player's session keeps its settings and records; headless runs and replays never do */
     if (freeplay >= 0) rr_hw_set_freeplay(freeplay);
     else if (windowed && g_cfg_freeplay >= 0) {        /* the saved menu choice, windowed runs only */
         rr_hw_set_freeplay(g_cfg_freeplay);
         fprintf(stderr, "[RR] %s (rr_controls.cfg)\n", g_cfg_freeplay ? "free play" : "coins required");
     }
+    if (windowed && g_cfg_car >= 0 && g_rr_game->car_set && g_cfg_car < g_rr_game->ncars) {   /* the saved Car choice, windowed runs only */
+        g_rr_game->car_set(g_cfg_car);
+        fprintf(stderr, "[RR] car %d %s (controls cfg)\n", g_cfg_car + 1, g_rr_game->cars[g_cfg_car]);
+    }
     if (windowed) rr_hw_set_steering_motor(g_cfg_ffb_strength > 0);   /* the game only drives the motor with its own option ON */
+    if (rep_path) rr_input_replay_eeprom(g_rr.eeprom);   /* a replay: the session's own EEPROM */
+    rr_input_record_eeprom(g_rr.eeprom);                  /* a recording: the EEPROM this session starts from */
     { const char *e = getenv("RR_LINK_CABINET");              /* temporary: the lobby/config will drive this */
       if (e) rr_hw_set_link_cabinet(atoi(e)); }
     if (g_cfg_net_name[0]) rr_net_set_name(g_cfg_net_name);        /* the saved lobby name (windowed: from rr_controls.cfg) */

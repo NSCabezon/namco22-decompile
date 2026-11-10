@@ -36,7 +36,7 @@ static const char *st_name[] = { "OFFLINE", "CONNECTING", "LOBBY", "SESSION" };
 
 enum { T_HELLO = 0x01, T_WELCOME, T_ROSTER, T_READY, T_START, T_GO, T_LEAVE,
        T_FRAME, T_PING, T_PONG, T_ACK, T_DISCOVER, T_ANNOUNCE, T_CHAT,
-       T_ROOMS, T_ROOMLIST, T_RENAME, T_DELROOM };
+       T_ROOMS, T_ROOMLIST, T_RENAME, T_DELROOM, T_CHATLOG };
 enum { M_AUTO = 0, M_JOIN = 1, M_CREATE = 2 };          /* NMN2 HELLO modes */
 #define ROOM_NEW 255                                    /* RRN1 HELLO selector: a new room */
 
@@ -59,15 +59,22 @@ static void hint(const char *t, int frames) { if (G->hint) G->hint(t, frames); }
 static char chat_buf[CHAT_LINES][8 + 24 + 2 + CHAT_TEXT + 1];      /* "[HH:MM] " + "Name: text" */
 static int chat_n, chat_head;
 static uint32_t chat_serial;
-static void chat_push(const char *line)
+/* a line stamped with its time: [HH:MM], or [Mon DD] for a history line from before the last 20 hours. history = 1: CHATLOG,
+ * dropped when the same stamped line is already shown (a room change replays the game's history; our own lines come back in it) */
+static void chat_push_at(const char *line, time_t t, int history)
 {
+    char b[sizeof chat_buf[0]];
+    struct tm *tm = localtime(&t);
+    if (!tm) snprintf(b, sizeof b, "%s", line);
+    else if (history && time(NULL) - t > 20 * 3600) { char d[16]; strftime(d, sizeof d, "%b %d", tm); snprintf(b, sizeof b, "[%s] %s", d, line); }
+    else snprintf(b, sizeof b, "[%02d:%02d] %s", tm->tm_hour, tm->tm_min, line);
+    if (history) for (int k = 0; k < chat_n; k++) if (!strcmp(chat_buf[(chat_head + k) % CHAT_LINES], b)) return;
     int i = (chat_head + chat_n) % CHAT_LINES;
     if (chat_n == CHAT_LINES) { chat_head = (chat_head + 1) % CHAT_LINES; i = (chat_head + CHAT_LINES - 1) % CHAT_LINES; } else chat_n++;
-    time_t t = time(NULL); struct tm *tm = localtime(&t);
-    if (tm) snprintf(chat_buf[i], sizeof chat_buf[i], "[%02d:%02d] %s", tm->tm_hour, tm->tm_min, line);
-    else snprintf(chat_buf[i], sizeof chat_buf[i], "%s", line);
+    snprintf(chat_buf[i], sizeof chat_buf[i], "%s", b);
     chat_serial++;
 }
+static void chat_push(const char *line) { chat_push_at(line, time(NULL), 0); }
 static void chat_pushf(const char *fmt, ...)
 {
     char b[160]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
@@ -593,6 +600,21 @@ static void on_message(int p_, int type, uint16_t seq, uint16_t room, const uint
             snprintf(line, sizeof line, "%s: %s", who, tx);
             chat_push(line);
             if (debug == 1) fprintf(stderr, "[NET] chat: %s\n", line);
+        }
+        break;
+    case T_CHATLOG:                                             /* the game's chat history, oldest first, once after we joined */
+        if (len >= 6 && p_ == proto && (st == ST_LOBBY || st == ST_SESSION)) {
+            const uint32_t age = (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+            const int nl = p[4] > 16 ? 16 : p[4];
+            if (5 + p[4] >= len) break;
+            char who[24], tx[CHAT_TEXT + 1], line[24 + 2 + CHAT_TEXT + 1]; int k = 0;
+            for (int i = 0; i < nl; i++) if (p[5 + i] >= ' ' && p[5 + i] != 0x7F) who[k++] = (char)p[5 + i];
+            who[k] = 0; k = 0;
+            for (int i = 5 + p[4]; i < len && k < CHAT_TEXT; i++) if (p[i] >= ' ' && p[i] != 0x7F) tx[k++] = (char)p[i];
+            tx[k] = 0;
+            snprintf(line, sizeof line, "%s: %s", who[0] ? who : "?", tx);
+            chat_push_at(line, time(NULL) - (time_t)age, 1);
+            if (debug == 1) fprintf(stderr, "[NET] chat history (%u s ago): %s\n", (unsigned)age, line);
         }
         break;
     case T_ROOMLIST:

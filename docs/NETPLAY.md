@@ -1,7 +1,8 @@
 # NMN2 -- online play for every game
 
 One protocol, one server, one client library for every game of this tree that links cabinets: Rave Racer (`rr`), Tokyo Wars
-(`tw`), Cyber Sled (`cs`), and later Ace Driver (`ad`), Dirt Dash (`dd`), Time Crisis (`tc`), Prop Cycle (`pc`).
+(`tw`), Cyber Sled (`cs`), and later Ace Driver (`ad`), Dirt Dash (`dd`), Time Crisis (`tc`), Prop Cycle (`pc`),
+Time Crisis 2 (`t2`, the System 23 host in `tc2/` -- its own copy of the client, `tc2/src/eng/net.c`).
 
 | piece | where | what |
 |---|---|---|
@@ -60,6 +61,7 @@ into each other.
 | 0x10 | ROOMLIST | s->c | `count u8`, per room: `id u16, ver u16, state u8, players u8, max_players u8, mine u8, name_len u8, name` -- the asker's GAME only, every version (a client greys out other versions), at most 32 |
 | 0x11 | RENAME | c->s | `name_len, name` |
 | 0x12 | DELROOM | c->s | empty; the header's room (only an EMPTY room not in a session); answered with ROOMLIST |
+| 0x13 | CHATLOG | s->c | `age_s u32, name_len u8, name, text`: one line of the GAME's chat history (its last 50 lines, every room), oldest first, sent once to a new member after its first message (never with the WELCOME: no amplification); `--chat-file` keeps it across restarts. Older clients ignore it |
 
 `roster := count u8, then per member { slot u8, ready u8, name_len u8, name }`, ordered by slot.
 
@@ -103,7 +105,8 @@ tools/net/nmn_stat.py [host[:port]] [--games rr,cs] [--json]   # WHAT A SERVER H
 ```
 
 Per-game limits are a table in `server/src/lib.rs` (`GAMES`): Rave Racer 8 players / 40-byte frames, Tokyo Wars 4 / 720,
-Cyber Sled 2 / 512, Ace Driver, Dirt Dash, Prop Cycle 8 / 256, Time Crisis 2 / 256. **A game not in the table may still play**
+Cyber Sled 2 / 512, Ace Driver, Dirt Dash, Prop Cycle 8 / 256, Time Crisis 2 / 256, Time Crisis 2 (`t2`) 2 / 1024
+(a gameplay packet of its C422 link is ~250 bytes: **a server without this row caps it at 256 and Time Crisis 2 cannot link**). **A game not in the table may still play**
 (defaults 8 players, 256 bytes), so adding a game needs no server update unless it needs more.
 
 Hardening: per-type length rules (FRAME exact); an address holding no slot is answered only for HELLO / PING / DISCOVER / ROOMS

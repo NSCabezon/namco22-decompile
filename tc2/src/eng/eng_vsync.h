@@ -54,6 +54,20 @@ typedef struct {
     unsigned char sample[16][4]; int check;          /* ENG_VSYNC_CHECK: 16 pixels of the original; -1 unset */
     unsigned log_frames, log_pics, log_checked, log_bad; uint64_t log_t0; int log_on;
     bool forced;                                     /* ENG_FPS set: the menu's choice is ignored */
+    void (*extra)(void *ctx, double frac);           /* set: draws each EXTRA picture itself (TC2's motion smoothing) instead of re-showing the kept one;
+                                                      * frac = the tick's place in the game frame, 0..1 */
+    void *extra_ctx;
+    /* POLLED PRESENTATION (a fixed picture rate, TC2's host): draw(ctx, frac) puts the picture for a tick at frac (0..1) of the game frame on
+     * screen into the back buffer; the ticks are served from the window pass AND from the emulation's slice loop (eng_vsync_poll), so a tick
+     * that falls while the CPUs run a frame (~7 ms of every 16.7) goes out on time instead of when the frame is done */
+    void (*draw)(void *ctx, double frac);
+    void *draw_ctx;
+    uint64_t cur;                                    /* the start of the game frame on screen */
+    bool live;                                       /* polled presentation in force (a fixed rate, the game running) */
+    bool ready;                                      /* the back buffer already holds the picture for the tick at pnext */
+    unsigned log_late;                               /* ticks served more than half a tick late */
+    int slow_swaps;                                  /* polled ticks in a row whose swap BLOCKED (a driver forcing vsync) */
+    bool swap_blocks;                                /* seen: polled presentation is off for good (the swaps would starve the emulation) */
 } eng_vsync;
 
 static inline uint64_t eng_vsync_ns(void)          /* SDL's counter (works on Windows too); split so counter * 1e9 cannot overflow */
@@ -91,7 +105,7 @@ static inline int eng_vsync_rate_valid(int fps)
     return ENG_VSYNC_DEFAULT;
 }
 
-static inline void eng_vsync_resync(eng_vsync *v) { v->next_ns = v->pnext = eng_vsync_ns(); v->vs_frames = 0; }
+static inline void eng_vsync_resync(eng_vsync *v) { v->next_ns = v->pnext = v->cur = eng_vsync_ns(); v->vs_frames = 0; v->live = false; }
 
 static inline void eng_vsync_set_lock(eng_vsync *v, int fps)
 {
@@ -153,12 +167,20 @@ static inline void eng_vsync_samples(eng_vsync *v, int w, int h, unsigned char o
     (void)v;
 }
 
+static const char *eng_vsync_extra_tag;              /* set by an extra-picture hook: what it drew (ENG_SWAPLOG) */
+/* ENG_SWAPLOG=<file>: every swap's time (ns) and the picture's tag (tests of the pacing: the spacing must be even) */
+static inline void eng_vsync_note_swap(const char *tag)
+{
+    static FILE *f; static int init;
+    if (!init) { init = 1; const char *e = getenv("ENG_SWAPLOG"); if (e) f = fopen(e, "w"); }
+    if (f) fprintf(f, "%llu %s\n", (unsigned long long)eng_vsync_ns(), tag ? tag : "-");
+}
 static inline void eng_vsync_wait(uint64_t until);
 static inline void eng_vsync_capture(eng_vsync *v, SDL_Window *win)
 {
     v->shown = true;
     if (v->lock && v->pnext < v->next_ns + ENG_FRAME_NS) eng_vsync_wait(v->pnext);   /* the picture goes out ON its tick: even spacing */
-    if (!v->lock || v->tp >= ENG_FRAME_NS) return;  /* nothing to show twice */
+    if (!v->lock || v->tp >= ENG_FRAME_NS || v->extra) return;  /* nothing to show twice (or the extra pictures are drawn, not copied) */
     int w, h; SDL_GL_GetDrawableSize(win, &w, &h);
     if (w <= 0 || h <= 0) return;
     unsigned tw = 1, th = 1; while (tw < (unsigned)w) tw <<= 1; while (th < (unsigned)h) th <<= 1;
@@ -229,9 +251,10 @@ static inline void eng_vsync_log(eng_vsync *v)
     const double s = (double)(now - v->log_t0) / 1e9;
     char chk[64] = "";
     if (v->check) snprintf(chk, sizeof chk, "; re-shown pictures checked %u, differing %u", v->log_checked, v->log_bad);
+    else if (v->live) snprintf(chk, sizeof chk, "; %u pictures over half a tick late", v->log_late);
     fprintf(stderr, "[FPS] %s: %.2f pictures/s (%u game frames, %.2f/s)%s\n",
             v->lock ? "locked" : eng_vsync_mode(v), v->log_pics / s, v->log_frames, v->log_frames / s, chk);
-    v->log_t0 = now; v->log_frames = v->log_pics = v->log_checked = v->log_bad = 0;
+    v->log_t0 = now; v->log_frames = v->log_pics = v->log_checked = v->log_bad = v->log_late = 0;
 }
 
 static inline void eng_vsync_after_frame(eng_vsync *v, SDL_Window *win)
@@ -268,9 +291,11 @@ static inline void eng_vsync_after_frame(eng_vsync *v, SDL_Window *win)
     }
     while (v->pnext < end) {                                     /* the extra ticks: the same picture again */
         if (v->shown && v->tex && win) {
+            if (v->extra) v->extra(v->extra_ctx, (double)(v->pnext - v->next_ns) / (double)ENG_FRAME_NS);   /* drawn BEFORE its tick */
             eng_vsync_wait(v->pnext);
-            eng_vsync_redraw(v, win);
+            if (!v->extra) eng_vsync_redraw(v, win);
             SDL_GL_SwapWindow(win);
+            eng_vsync_note_swap(v->extra ? eng_vsync_extra_tag : "again");
             v->log_pics++;
         }
         v->pnext += v->tp;
@@ -279,6 +304,57 @@ static inline void eng_vsync_after_frame(eng_vsync *v, SDL_Window *win)
     const uint64_t now = eng_vsync_ns();
     if (end > now) eng_vsync_wait(end);
     else if (now - end > 100000000ull) eng_vsync_resync(v);    /* fell behind: resync, no catch-up burst */
+    eng_vsync_log(v);
+}
+
+/* ---- polled presentation ---- */
+static inline void eng_vsync_tick(eng_vsync *v, SDL_Window *win)      /* the tick at v->pnext: drawn, swapped */
+{
+    const uint64_t now = eng_vsync_ns();
+    if (now > v->pnext + v->tp) v->pnext += (now - v->pnext) / v->tp * v->tp;   /* ticks missed outright are dropped, not shown in a burst */
+    if (now > v->pnext + v->tp / 2) v->log_late++;
+    if (!v->ready && v->draw) { double frac = (double)((int64_t)(v->pnext - v->cur)) / (double)ENG_FRAME_NS; v->draw(v->draw_ctx, frac < 0 ? 0 : frac); }
+    const uint64_t t0 = eng_vsync_ns();
+    SDL_GL_SwapWindow(win);
+    if (eng_vsync_ns() - t0 > v->tp / 2) {           /* the swap waited for a vblank: the driver forces vsync (polled ticks run inside the
+                                                      * emulation's slices, so each would stall it a whole refresh -- measured 3 game frames/s) */
+        if (++v->slow_swaps >= 8 && !v->swap_blocks) { v->swap_blocks = true; fprintf(stderr, "[HOST] the swap blocks (vsync forced by the driver?): pictures paced by the frame loop\n"); }
+    } else v->slow_swaps = 0;
+    eng_vsync_note_swap(eng_vsync_extra_tag);
+    v->log_pics++;
+    v->pnext += v->tp;
+    v->ready = false;
+    if (v->draw && v->pnext < v->cur + ENG_FRAME_NS) {   /* the next tick is this frame's too: draw it now, so at its time only the swap is left */
+        v->draw(v->draw_ctx, (double)((int64_t)(v->pnext - v->cur)) / (double)ENG_FRAME_NS);
+        v->ready = true;
+    }
+}
+/* the ticks that are due now (the emulation's slice loop calls this through the host; cheap when none is) */
+static inline void eng_vsync_poll(eng_vsync *v, SDL_Window *win)
+{
+    if (!v->live || !win || v->swap_blocks) return;
+    /* only the ticks due NOW: with a blocking swap (vsync) each tick returns at the next vblank, i.e. when the next tick is due -- re-reading
+     * the clock in the loop then never ended on a display a hair slower than its rate (the Windows hang at 165 Hz) */
+    const uint64_t now = eng_vsync_ns();
+    while (v->pnext <= now) eng_vsync_tick(v, win);
+}
+/* a new game frame is ready to go on screen: the frame on screen keeps its remaining ticks until its period ends (waiting for them),
+ * prepare(ctx) then switches the content, and the new frame starts at the end of the old one's period (the pacing of the game). */
+static inline void eng_vsync_next_frame(eng_vsync *v, SDL_Window *win, void (*prepare)(void *), void *ctx)
+{
+    if (!v->live) { v->cur = v->pnext = eng_vsync_ns(); v->next_ns = v->cur; v->live = true; v->ready = false; prepare(ctx); eng_vsync_poll(v, win); return; }
+    const uint64_t end = v->cur + ENG_FRAME_NS;
+    while (v->pnext < end) {                         /* the old frame's last ticks */
+        eng_vsync_wait(v->pnext);
+        eng_vsync_tick(v, win);
+    }
+    prepare(ctx);                                    /* drawn before its period starts */
+    v->ready = false;
+    const uint64_t now = eng_vsync_ns();
+    if (end > now) eng_vsync_wait(end);
+    else if (now - end > 100000000ull) { v->cur = v->pnext = now; v->next_ns = now; eng_vsync_poll(v, win); eng_vsync_log(v); return; }   /* fell behind: resync */
+    v->cur = end; v->next_ns = end;
+    eng_vsync_poll(v, win);
     eng_vsync_log(v);
 }
 

@@ -29,8 +29,13 @@ Windows: `./build-windows.sh` (MinGW-w64 cross compiler) after `./build.sh`. Rel
 ## What works
 
 Attract, coins, play with the light gun / mouse / pad (stages 1 and 2 checked so far), sound, the operator's test menu, the battery
-RAM (settings and rankings) saved between sessions, widescreen, any internal resolution, frame-rate options, gun recoil output.
-Not yet: the two-cabinet link (the 2-player linked game needs a second machine).
+RAM (settings and rankings) saved between sessions, widescreen, any internal resolution, frame-rate options, gun recoil output, pad rumble on each shot (Display > Pad rumble on recoil),
+your own crosshair picture (PNG files in a `crosshairs/` folder beside the game, Display > Crosshair image).
+Two players: the menu's **Cabinet** page picks your side (Left/Red = Richard, Right/Blue = Keith), and the **Online** page links
+two copies over the internet (zonesync.net) or a LAN for the arcade's LINK PLAY co-op -- the twin cabinets' C422 link, which MAME
+does not emulate. **Two guns on one PC**: Online > "Second player on this computer" opens a second copy (one monitor each, or side by
+side) that joins by itself; Controls > "Gun device" gives each copy its own gun, read directly from the device (Linux evdev, Windows
+Raw Input) instead of the system pointer that merges them.
 
 ## Beyond MAME
 

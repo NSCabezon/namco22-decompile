@@ -11,7 +11,7 @@ enum { RR_COIN1, RR_COIN2, RR_SERVICE, RR_TEST, RR_SHIFT_DOWN, RR_SHIFT_UP, RR_V
 #define RR_MAXKEYS 4
 typedef struct { SDL_Scancode keys[RR_MAXKEYS]; int nkeys; SDL_GameControllerButton pad; } rr_bind_t;
 extern rr_bind_t g_bind[RR_ACT_N];
-extern int g_steer_speed, g_steer_return, g_pad_deadzone, g_cfg_freeplay;
+extern int g_steer_speed, g_steer_return, g_pad_deadzone, g_cfg_freeplay, g_cfg_car;
 extern int g_cfg_ffb_strength, g_cfg_ffb_invert;
 #define RR_STICK_N 4                      /* Controls > Stick steering (GitHub #42): the gamepad stick's response curve */
 extern const char *const g_stick_steer_name[RR_STICK_N];
@@ -19,6 +19,7 @@ extern const double g_stick_steer_curve[RR_STICK_N];
 extern int g_cfg_stick_steer;
 extern int g_cfg_fullscreen, g_cfg_scale, g_cfg_scaling, g_cfg_volume;
 extern int g_cfg_winmode, g_cfg_res_w, g_cfg_res_h, g_cfg_wide, g_cfg_aspect, g_cfg_draw, g_cfg_fps;
+extern int g_cfg_wide_169;                  /* widescreen's shape: 0 the window's, 1 16:9 */
 extern char g_cfg_net_server[128], g_cfg_net_name[24];   /* the Online page's server and lobby name */
 bool rr_input_set_option(const char *path, const char *key, const char *val);
 const char *rr_input_action_name(int a);
@@ -49,6 +50,8 @@ bool rr_input_write(const char *path);         /* write the defaults as a templa
 bool rr_input_replay_open(const char *path);
 bool rr_input_replaying(void);
 bool rr_input_record_start(const char *path);
+void rr_input_record_eeprom(const uint8_t *ee);      /* the boot's EEPROM into the recording (one `E` line)  */
+bool rr_input_replay_eeprom(uint8_t *ee);            /* a recording's EEPROM, if it has one */
 void rr_input_record_stop(void);
 bool rr_input_recording(void);
 void rr_input_frame(uint32_t frame);           /* apply replay / log recording */

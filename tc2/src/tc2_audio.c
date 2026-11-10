@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <SDL2/SDL.h>
+#include "tc2_game.h"
 
 static SDL_AudioDeviceID dev;
 static FILE *wav; static uint32_t wav_frames;
@@ -24,8 +25,16 @@ static void wav_header(void)
 }
 static void wav_close(void) { if (wav) { wav_header(); fclose(wav); wav = NULL; } }
 
+/* the game's speech (tc2_game_t speech_voices / speech_bank_*) for the C352's voice gain -- once, before the cfg (eng_disp_load) can override */
+static void speech_from_table(void)
+{
+    static int done; if (done) return; done = 1;
+    extern uint32_t g_c352_speech_mask; extern unsigned g_c352_speech_bank_lo, g_c352_speech_bank_hi;
+    g_c352_speech_mask = tc2_game.speech_voices; g_c352_speech_bank_lo = tc2_game.speech_bank_lo; g_c352_speech_bank_hi = tc2_game.speech_bank_hi;
+}
 void tc2_audio_open(void)
 {
+    speech_from_table();
     if (dev) return;
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) { fprintf(stderr, "[TC2] no audio: %s\n", SDL_GetError()); return; }
     SDL_AudioSpec want = { 0 }, have;
@@ -39,10 +48,11 @@ void tc2_audio_volume(int percent) { volume = percent; }
 void tc2_audio_push(const int16_t *s4, int n)
 {
     static int tried;
-    if (!tried) { tried = 1;
+    if (!tried) { tried = 1; speech_from_table();
         extern int g_c352_gain_music, g_c352_gain_fx; extern unsigned g_c352_music_mask;           /* headless tests: the Audio page's gains without a window */
         if (getenv("TC2_MUSIC_VOL")) g_c352_gain_music = atoi(getenv("TC2_MUSIC_VOL"));
         if (getenv("TC2_FX_VOL")) g_c352_gain_fx = atoi(getenv("TC2_FX_VOL"));
+        { extern int g_c352_gain_voice; if (getenv("TC2_VOICE_VOL")) g_c352_gain_voice = atoi(getenv("TC2_VOICE_VOL")); }
         if (getenv("TC2_MUSIC_VOICES")) g_c352_music_mask = (unsigned)strtoul(getenv("TC2_MUSIC_VOICES"), NULL, 16);
         const char *p = getenv("TC2_WAV"); if (p && (wav = fopen(p, "wb"))) { fseek(wav, 44, SEEK_SET); atexit(wav_close); } }
     if (!dev && !wav) return;

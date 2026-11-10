@@ -15,4 +15,5 @@ Signals the games send:
   gun_recoil     1 while the gun's recoil is on (Time Crisis 2: a 3-frame pulse per shot; Crisis Zone: the whole burst)
   out0..out2     the I/O board's three output bits (out0 = the recoil; Crisis Zone: out1 = the gun is live in play)
   analog0        Crisis Zone only: the I/O board's analog output
-  lamp0..lamp7   the main board's lamps, the names MAME uses
+  lamp0..lamp7   the main board's lamps, the names MAME uses -- only with Display > Lamp outputs ON (off by default:
+                 they change all the time, and the extra traffic is not needed for recoil)

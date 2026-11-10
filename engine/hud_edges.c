@@ -172,7 +172,7 @@ void eng_hud_quads_scan(const geo_quad *buf, int n, int band, bool zero_depth)
     if (!g_eng_hud_e) return;
     for (int i = 0; i < n; i++) {
         const int32_t *c = buf[i].clip;
-        if (c[0] <= 0 && c[1] >= ENG_SCREEN_W - 1) continue;            // a full-frame viewport is not a window
+        if (eng_clip_full(c)) continue;            // a full-frame viewport is not a window
         int k;
         for (k = 0; k < nwin; k++) if (!memcmp(win[k].r, c, sizeof win[k].r)) break;
         if (k == nwin && nwin < MAXWIN) { memcpy(win[nwin].r, c, sizeof win[0].r); win[nwin].dx = eng_hud_dx((c[0] + c[1]) / 2.0); nwin++; }
@@ -183,13 +183,18 @@ int eng_hud_quad_dx(const geo_quad *q)
 {
     if (!g_eng_hud_e) return 0;
     const int32_t *c = q->clip;
-    if (!(c[0] <= 0 && c[1] >= ENG_SCREEN_W - 1)) return eng_hud_dx((c[0] + c[1]) / 2.0);       // in a sub-window: with the window
+    if (!eng_clip_full(c)) return eng_hud_dx((c[0] + c[1]) / 2.0);       // in a sub-window: with the window
     const bool hud_piece = (hud_band >= 0 && ((q->zsort >> 21) & 7) == hud_band) || (hud_zero_depth && (q->zsort & 0x1FFFFF) == 0);
-    if (!hud_piece) return 0;                                                                     // the world's
+    if (!hud_piece && !q->direct) return 0;                                                       // the world's
     int x0 = 1 << 30, x1 = -(1 << 30), y0 = 1 << 30, y1 = -(1 << 30);
     for (int i = 0; i < q->nrv; i++) {
         const int x = q->rv[i].sx16 >> 4, y = q->rv[i].sy16 >> 4;
         if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    if (!hud_piece) {                  // a DIRECT polygon (screen space) at any depth: with a sub-window it lies in, else stays.
+        for (int k = 0; k < nwin; k++) // Ace Driver's side mirrors: the backing behind each mirror window is a direct poly at the
+            if (x0 >= win[k].r[0] - 4 && x1 <= win[k].r[1] + 4 && y0 >= win[k].r[2] - 4 && y1 <= win[k].r[3] + 4) return win[k].dx;
+        return 0;                      // farthest depth; left in place it showed as a block where the mirror had been
     }
     if (x0 < -64 || x1 > ENG_SCREEN_W + 64 || y0 < -64 || y1 > ENG_SCREEN_H + 64) return 0;      // not a piece of screen-space HUD
     for (int k = 0; k < nwin; k++)                                                                 // inside a window's frame: goes with it

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Ridge Racer 2
+Comment=Namco's 1994 arcade racing game Ridge Racer 2 (decompiled engine)
+Exec=ridgeracer2
+Icon=ridgeracer2
+Terminal=false
+Categories=Game;ArcadeGame;

@@ -8,7 +8,7 @@
 # comes with Windows and the GPU driver), an empty roms/ folder and
 # HOW TO PLAY.txt -- plus windows-release.zip.
 # On Windows: put the MAME ROM sets in roms/ (propcycl.zip for Prop Cycle;
-# raverace.zip + namcoc74.zip for Rave Racer; tokyowar.zip for Tokyo Wars; dirtdash.zip for Dirt Dash; adillor.zip for Armadillo Racing; timecris.zip for Time Crisis; acedrive.zip + namcoc74.zip for Ace Driver; cybsled.zip + namcoc67.zip + namcoc68.zip for Cyber Sled) and
+# raverace.zip + namcoc74.zip for Rave Racer; tokyowar.zip for Tokyo Wars; dirtdash.zip for Dirt Dash; adillor.zip for Armadillo Racing; timecris.zip for Time Crisis; acedrive.zip + namcoc74.zip for Ace Driver; cybrcomm.zip + namcoc74.zip for Cyber Commando; ridgera2.zip + namcoc74.zip for Ridge Racer 2; cybsled.zip + namcoc67.zip + namcoc68.zip for Cyber Sled) and
 # double-click the game. The
 # first start unpacks the ROMs into extracted/ beside it.
 #
@@ -114,6 +114,11 @@ cmake --build build-win/ad --target ad -j"${JOBS:-$(nproc)}"
 cmake -S cybrcomm -B build-win/cc -DCMAKE_TOOLCHAIN_FILE="$TOP/build-win/toolchain.cmake" \
       -DCMAKE_BUILD_TYPE=Release >/dev/null
 cmake --build build-win/cc --target cc -j"${JOBS:-$(nproc)}"
+# Ridge Racer 2 (ridgera2/): the same board and runtime again (gen/rr_lifted.c comes with the tree; the master DSP and sound
+# programs are translated from ridgera2/extracted/). rr_lifted.c, rr_c25.c and snd_driver.c need GBs of gcc each: one at a time
+cmake -S ridgera2 -B build-win/r2 -DCMAKE_TOOLCHAIN_FILE="$TOP/build-win/toolchain.cmake" \
+      -DCMAKE_BUILD_TYPE=Release >/dev/null
+cmake --build build-win/r2 --target r2 -j1
 # Cyber Sled (cybsled/, System 21): gen/c{m,s}_lifted.c come with the tree (~3 GB of gcc each: one at a time); the C67 DSP, 6809
 # sound and C68 I/O programs are translated from cybsled/extracted/
 cmake -S cybsled -B build-win/cs -DCMAKE_TOOLCHAIN_FILE="$TOP/build-win/toolchain.cmake" \
@@ -136,13 +141,14 @@ cp build-win/am/am.exe "$REL/ArmadilloRacing.exe"
 cp build-win/tc/tc.exe "$REL/TimeCrisis.exe"
 cp build-win/ad/ad.exe "$REL/AceDriver.exe"
 cp build-win/cc/cc.exe "$REL/CyberCommando.exe"
+cp build-win/r2/r2.exe "$REL/RidgeRacer2.exe"
 cp build-win/cs/cs21.exe "$REL/CyberSled.exe"
 mkdir -p "$REL/mesa"
 cp "$MESA/opengl32.dll" "$MESA/libgallium_wgl.dll" "$REL/mesa/"
-x86_64-w64-mingw32-strip "$REL/PropCycle.exe" "$REL/RaveRacer.exe" "$REL/TokyoWars.exe" "$REL/DirtDash.exe" "$REL/ArmadilloRacing.exe" "$REL/TimeCrisis.exe" "$REL/AceDriver.exe" "$REL/CyberCommando.exe" "$REL/CyberSled.exe"
+x86_64-w64-mingw32-strip "$REL/PropCycle.exe" "$REL/RaveRacer.exe" "$REL/TokyoWars.exe" "$REL/DirtDash.exe" "$REL/ArmadilloRacing.exe" "$REL/TimeCrisis.exe" "$REL/AceDriver.exe" "$REL/CyberCommando.exe" "$REL/RidgeRacer2.exe" "$REL/CyberSled.exe"
 # the .exe must need nothing beside it: every DLL it imports must ship with Windows
 # (OPENGL32.dll does -- it hands over to the installed GPU driver and is never bundled)
-for exe in PropCycle.exe RaveRacer.exe TokyoWars.exe DirtDash.exe ArmadilloRacing.exe TimeCrisis.exe AceDriver.exe CyberCommando.exe CyberSled.exe; do
+for exe in PropCycle.exe RaveRacer.exe TokyoWars.exe DirtDash.exe ArmadilloRacing.exe TimeCrisis.exe AceDriver.exe CyberCommando.exe RidgeRacer2.exe CyberSled.exe; do
     bad=$(x86_64-w64-mingw32-objdump -p "$REL/$exe" | awk '/DLL Name/ {print $3}' |
           grep -viE '^(kernel32|user32|gdi32|opengl32|advapi32|shell32|ole32|oleaut32|imm32|setupapi|version|winmm|dinput8|ws2_32|api-ms-win-crt-.*)\.dll$' || true)
     [ -z "$bad" ] || { echo "$exe needs DLLs Windows does not ship: $bad"; exit 1; }

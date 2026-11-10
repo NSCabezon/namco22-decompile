@@ -194,7 +194,7 @@ impl Stats {
     pub fn report(&self, top: usize) -> String {
         let title = |g: &str| match g {
             "rr" => "Rave Racer", "ad" => "Ace Driver", "tw" => "Tokyo Wars", "cs" => "Cyber Sled", "dd" => "Dirt Dash",
-            "tc" => "Time Crisis", "pc" => "Prop Cycle", _ => "",
+            "tc" => "Time Crisis", "t2" => "Time Crisis 2", "pc" => "Prop Cycle", _ => "",
         };
         let mut o = String::new();
         let _ = writeln!(o, "since {} (UTC)   distinct players (by IP) over all games: {}   peak online: {} on {}",

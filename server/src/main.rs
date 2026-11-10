@@ -1,11 +1,12 @@
 //! nmn-server [--port 27750] [--bind 0.0.0.0] [--name NAME] [--max-per-ip N] [--max-rooms N] [--max-rooms-per-game N]
 //!            [--room-ttl-min N] [--max-session-min N] [--frame-idle-sec N] [--status-sec N] [--quiet] [--stats-file PATH]
+//!            [--chat-file PATH]
 //! nmn-server --show-stats PATH [--top N]      the lifetime statistics a server kept (see src/stats.rs)
 //!
 //! One lobby + relay for every game's online play (NMN2, docs/NETPLAY.md) and Rave Racer's old RRN1 on the same port.
 //! Single thread, std only: a UDP socket with a short read timeout drives `Hub::handle` / `Hub::tick`.
 
-use nmn_server::{stats::Stats, Config, Hub, Out, DEFAULT_PORT};
+use nmn_server::{stats::Stats, ChatLog, Config, Hub, Out, DEFAULT_PORT};
 use std::io::ErrorKind;
 use std::net::UdpSocket;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,6 +16,7 @@ fn usage() -> ! {
         "usage: nmn-server [--port N] [--bind ADDR] [--name NAME] [--max-per-ip N] [--max-rooms N] [--max-rooms-per-game N]\n\
          \x20                 [--room-ttl-min N] [--max-session-min N] [--frame-idle-sec N] [--status-sec N] [--quiet]\n\
          \x20                 [--stats-file PATH]          keep lifetime statistics (players, games, sessions) in PATH\n\
+         \x20                 [--chat-file PATH]           keep each game's chat history (the last lines, shown to whoever joins) in PATH\n\
          \x20      nmn-server --show-stats PATH [--top N]   print them"
     );
     std::process::exit(2);
@@ -30,6 +32,7 @@ fn main() {
     let mut cfg = Config::default();
     let mut quiet = false;
     let mut stats_file: Option<String> = None;
+    let mut chat_file: Option<String> = None;
     let mut show: Option<String> = None;
     let mut top = 25usize;
     let mut args = std::env::args().skip(1);
@@ -53,6 +56,7 @@ fn main() {
             "--status-sec" => cfg.status_every = Duration::from_secs(num(val("--status-sec"))),
             "--quiet" => quiet = true,
             "--stats-file" => stats_file = Some(val("--stats-file")),
+            "--chat-file" => chat_file = Some(val("--chat-file")),
             "--show-stats" => show = Some(val("--show-stats")),
             "--top" => top = num(val("--top")),
             _ => usage(),
@@ -98,6 +102,16 @@ fn main() {
         }
     }
     let mut last_save = Instant::now();
+    if let Some(p) = &chat_file {
+        if let Ok(t) = std::fs::read_to_string(p) {
+            hub.chat = ChatLog::from_text(&t);
+        }
+        if !quiet {
+            let n: usize = hub.chat.games.values().map(|q| q.len()).sum();
+            println!("[nmn] chat history kept in {} ({} line(s) loaded)", p, n);
+        }
+    }
+    let mut last_chat_save = Instant::now();
 
     let mut buf = [0u8; 2048];
     let mut out: Out = Vec::new();
@@ -129,6 +143,17 @@ fn main() {
                     eprintln!("[nmn] cannot write {}", p);
                 }
                 last_save = now;
+            }
+        }
+        if let Some(p) = &chat_file {
+            if hub.chat.dirty && now.duration_since(last_chat_save) >= Duration::from_secs(10) {
+                let tmp = format!("{}.tmp", p);
+                if std::fs::write(&tmp, hub.chat.to_text()).and_then(|_| std::fs::rename(&tmp, p)).is_ok() {
+                    hub.chat.dirty = false;
+                } else {
+                    eprintln!("[nmn] cannot write {}", p);
+                }
+                last_chat_save = now;
             }
         }
         for e in hub.events.drain(..) {

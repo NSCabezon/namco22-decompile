@@ -171,6 +171,10 @@ static void state_set(uint16_t type, const uint16_t *p, uint16_t header)
     case 0x00C8:
         for (int i = 0; i < 8; i++) clip_data[clip_line * 8 + i] = tc2_f24(L(p, 2 * i + 1));
         clip_line = (clip_line + 1) % 3;
+        { static int lg = -1; if (lg < 0) lg = getenv("TC2_CLIPLOG") != NULL;   /* $TC2_CLIPLOG: every complete clip-data set (3 lines of 8 floats) */
+          extern uint32_t rr_frame;
+          if (lg && clip_line == 0) { static float prevc[24]; if (memcmp(prevc, clip_data, sizeof prevc)) { memcpy(prevc, clip_data, sizeof prevc);
+              fprintf(stderr, "[CLIP] f%u", rr_frame); for (int i = 0; i < 24; i++) fprintf(stderr, "%s%g", i % 8 ? " " : " | ", clip_data[i]); fprintf(stderr, "\n"); } } }
         if (clip_line == 0 && clip_data[10] != 0.f) {
             const float a10 = clip_data[10] < 0 ? -clip_data[10] : clip_data[10], a23 = clip_data[23] < 0 ? -clip_data[23] : clip_data[23];
             const float a2 = clip_data[2] < 0 ? -clip_data[2] : clip_data[2];
@@ -216,7 +220,10 @@ void tc2_c435_pio(uint16_t w)
         break;
     case 0x4000:
         switch (h & 0x3F00) {
-        case 0x0000: case 0x0600: break;
+        case 0x0000: case 0x0600:                  /* MAME: unknown state-set types 4.0 / 4.6 */
+            { static int lg = -1; if (lg < 0) lg = getenv("TC2_UNKLOG") != NULL;   /* $TC2_UNKLOG: every 4.0 / 4.6 write (TEST ONLY, GitHub #54) */
+              if (lg) fprintf(stderr, "[UNK4] f%u %04X %04X\n", rr_frame, h, c435.buffer[1]); }
+            break;
         case 0x0100: absolute_priority = c435.buffer[1]; break;
         case 0x0200: tx = (int16_t)c435.buffer[1]; break;
         case 0x0300: ty = (int16_t)c435.buffer[1]; break;
@@ -300,10 +307,11 @@ int tc2_c435_write(uint32_t p, int size, uint32_t v)
     case 0x01000020u: c435.size = v; return 1;
     case 0x01000024u: if (v & 1) dma(); return 1;
     case 0x01000060u: c435.pos = 0; return 1;
+    case 0x0100005Cu: if (!tc2_game.super23) return 0; tc2_irq_set(TC2_SRC_C361, 0); return 1;   /* MAME namcoss23_state::c435_c361_ack_w */
     case 0x02000000u: if (size == 2) { tc2_c435_pio((uint16_t)v); return 1; } return 0;
     case 0x0C800010u: c435.state_pos = 0; return 1;
     case 0x0C800016u: state_pio((uint16_t)v); return 1;
     }
     return 0;
 }
-int tc2_c435_owns(uint32_t p) { return (p >= 0x0100001Cu && p <= 0x0100002Bu) || p == 0x01000060u || p == 0x0C800010u || p == 0x0C800016u; }
+int tc2_c435_owns(uint32_t p) { return (p >= 0x0100001Cu && p <= 0x0100002Bu) || p == 0x01000060u || (tc2_game.super23 && p == 0x0100005Cu) || p == 0x0C800010u || p == 0x0C800016u; }
